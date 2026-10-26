@@ -1,0 +1,15 @@
+[package]
+name = "egress-request"
+description = "Asks the user of a herdr-vm-worktree VM to allow a refused egress request"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+clap.workspace = true
+serde_json.workspace = true
+
+[lints]
+workspace = true

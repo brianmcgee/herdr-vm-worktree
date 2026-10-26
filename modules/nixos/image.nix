@@ -1,5 +1,6 @@
 # The base image of a worktree VM. One generic NixOS image for all
 # worktrees. It holds no repo devshell and no credential.
+{ flake, ... }:
 {
   config,
   lib,
@@ -9,6 +10,13 @@
 }:
 let
   cfg = config.hvw.image;
+
+  # Only `egress-request` of the workspace goes into the VM. The other
+  # programs hold member and client code that the VM does not need.
+  egressRequest = pkgs.runCommand "egress-request" { } ''
+    install -D ${flake.packages.${pkgs.stdenv.hostPlatform.system}.hvw}/bin/egress-request \
+      $out/bin/egress-request
+  '';
 
   # `hvw-agent` runs this once after the boot, with the repo names as
   # arguments. It needs /run/hvw/ca.crt and the farm disks of the repos.
@@ -64,6 +72,13 @@ in
       description = "The uid of the harness user. `hvw-agent` runs git and the harness with this uid.";
     };
 
+    packages = lib.mkOption {
+      type = lib.types.listOf lib.types.package;
+      default = [ ];
+      example = lib.literalExpression "[ pkgs.claude-code ]";
+      description = "Extra packages of the VM, for example the agent harness.";
+    };
+
     image = lib.mkOption {
       type = lib.types.package;
       readOnly = true;
@@ -90,11 +105,38 @@ in
       hashedPassword = "!";
     };
 
-    systemd.tmpfiles.settings."10-hvw-work"."/work".d = {
-      user = cfg.user;
-      group = "users";
-      mode = "0755";
-    };
+    systemd.tmpfiles.settings."10-hvw-work" =
+      let
+        dir = {
+          d = {
+            user = cfg.user;
+            group = "users";
+            mode = "0755";
+          };
+        };
+        home = "/home/${cfg.user}";
+      in
+      {
+        "/work" = dir;
+      }
+      # The skill that tells the agent how to ask for egress, in the skill
+      # directories of the common harnesses.
+      // lib.listToAttrs (
+        lib.concatMap
+          (h: [
+            (lib.nameValuePair "${home}/${h}" dir)
+            (lib.nameValuePair "${home}/${h}/skills" dir)
+            (lib.nameValuePair "${home}/${h}/skills/egress-request" {
+              "L+".argument = "/etc/hvw/skills/egress-request";
+            })
+          ])
+          [
+            ".claude"
+            ".codex"
+            ".agents"
+          ]
+      );
+    environment.etc."hvw/skills/egress-request/SKILL.md".source = ../../skills/egress-request/SKILL.md;
 
     networking = {
       useDHCP = false;
@@ -118,7 +160,9 @@ in
       pkgs.git
       pkgs.curl
       vmSetup
-    ];
+      egressRequest
+    ]
+    ++ cfg.packages;
 
     # A login shell gets the environment of the VM, and in a repo of /work
     # also the devshell of that repo.
