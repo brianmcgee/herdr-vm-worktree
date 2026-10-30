@@ -20,7 +20,7 @@ policy = "nix"
 | Field | Required | Meaning |
 |---|---|---|
 | `path` | one of `path`, `url` | A local checkout, relative to `hvw.toml`. `hvw` pushes its commits and uncommitted changes. |
-| `url` | one of `path`, `url` | A remote repo. The member clones it through its own network, not through the gatekeeper. |
+| `url` | one of `path`, `url` | A remote repo, as an `https://` URL. The member clones it through its own network, not through the gatekeeper. Other schemes, local paths and `git@host:path` are an error: the member runs git as root. |
 | `ref` | no | The branch or tag of `url`. Only with `url`. Default: the default branch. |
 | `name` | no | The directory `/work/<name>` in the VM. Default: the last component of the path or the URL, without `.git`. |
 | `policy` | yes | The name of an egress policy on the member. |

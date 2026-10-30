@@ -46,6 +46,8 @@ pub enum Error {
     DuplicateName(String),
     #[error("repo {0}: `policy` is empty")]
     EmptyPolicy(String),
+    #[error("repo URL {0:?} is not valid: use an https:// URL")]
+    BadUrl(String),
 }
 
 /// Where the source of a repo comes from.
@@ -102,6 +104,23 @@ pub fn valid_name(name: &str) -> bool {
             .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-'))
 }
 
+/// Checks the URL of a remote repo. The member fetches it as root, so
+/// only HTTPS is allowed: a local path or `file://` reads the files of the
+/// member, and SSH uses the identity of root. The host has no user part
+/// and does not start with `-`.
+pub fn valid_repo_url(url: &str) -> bool {
+    let Some(rest) = url.strip_prefix("https://") else {
+        return false;
+    };
+    let host = rest.split('/').next().unwrap_or_default();
+    !host.is_empty()
+        && !host.starts_with('-')
+        && host
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'-' | b':' | b'[' | b']'))
+        && !url.chars().any(|c| c.is_whitespace() || c.is_control())
+}
+
 fn last_component(text: &str) -> Option<String> {
     let trimmed = text.trim_end_matches('/');
     let last = trimmed.rsplit(['/', ':']).next()?;
@@ -127,10 +146,15 @@ impl Manifest {
                     }
                     Source::Path(normalize(&base.join(path)))
                 }
-                (None, Some(url)) => Source::Url {
-                    url,
-                    git_ref: r.git_ref,
-                },
+                (None, Some(url)) => {
+                    if !valid_repo_url(&url) {
+                        return Err(Error::BadUrl(url));
+                    }
+                    Source::Url {
+                        url,
+                        git_ref: r.git_ref,
+                    }
+                }
                 _ => return Err(Error::Source(index)),
             };
             let name = match r.name {
@@ -240,10 +264,38 @@ mod tests {
     }
 
     #[test]
-    fn scp_style_url_gives_name() {
-        let m = parse("[[repo]]\nurl = \"git@github.com:numtide/blueprint\"\npolicy = \"p\"\n")
-            .unwrap();
-        assert_eq!(m.repos[0].name, "blueprint");
+    fn repo_urls_are_https_only() {
+        for good in [
+            "https://github.com/NixOS/nixpkgs",
+            "https://github.com/NixOS/nixpkgs.git",
+            "https://git.example.org:8443/a/b",
+            "https://[2001:db8::1]/a",
+        ] {
+            assert!(valid_repo_url(good), "{good}");
+        }
+        for bad in [
+            "/var/lib/hvw/vms/hvw-x-12345678/git/app.git",
+            "../app",
+            "file:///etc",
+            "ext::sh -c id",
+            "ssh://git@github.com/a/b",
+            "git@github.com:numtide/blueprint",
+            "http://github.com/a/b",
+            "git://github.com/a/b",
+            "HTTPS://github.com/a/b",
+            "https://",
+            "https:///a",
+            "https://-oProxyCommand=x/y",
+            "https://user@github.com/a/b",
+            "https://github.com/a b",
+            "https://github.com/a\nb",
+        ] {
+            assert!(!valid_repo_url(bad), "{bad}");
+        }
+        assert_eq!(
+            parse("[[repo]]\nurl = \"git@github.com:numtide/blueprint\"\npolicy = \"p\"\n"),
+            Err(Error::BadUrl("git@github.com:numtide/blueprint".into()))
+        );
     }
 
     #[test]

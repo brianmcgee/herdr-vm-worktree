@@ -59,6 +59,8 @@ flowchart LR
   each gatekeeper. `hvw-agent` runs as root.
 - **virtiofsd.** It runs on the member and is the attack surface of the
   store delivery.
+- **Repo URLs.** The member clones each `https://` URL of a manifest
+  through its own network, also a host that only the member can reach.
 
 ## Limits that follow from the design
 

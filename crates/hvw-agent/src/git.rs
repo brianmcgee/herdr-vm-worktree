@@ -127,15 +127,28 @@ pub async fn clone_url(
     url: &str,
     git_ref: Option<&str>,
 ) -> Result<String> {
-    let m = mirror(cfg, vm, repo);
-    init_mirror(&m).await?;
+    clone_into(&mirror(cfg, vm, repo), url, git_ref).await
+}
+
+/// Fetches a remote repo into a mirror. Root runs git here, so a local
+/// path would read the mirrors of other VMs, and SSH would use the
+/// identity of root. Only HTTPS is allowed.
+async fn clone_into(m: &Path, url: &str, git_ref: Option<&str>) -> Result<String> {
+    if !hvw_core::manifest::valid_repo_url(url) {
+        bail!("the repo URL {url:?} is not valid: use an https:// URL");
+    }
     let src = git_ref.unwrap_or("HEAD");
     if src.starts_with('-') {
         bail!("bad ref {src:?}");
     }
+    init_mirror(m).await?;
     git(
-        &m,
+        m,
         &[
+            "-c",
+            "protocol.allow=never",
+            "-c",
+            "protocol.https.allow=always",
             "fetch",
             "--quiet",
             "--no-tags",
@@ -145,7 +158,7 @@ pub async fn clone_url(
         ],
     )
     .await?;
-    git(&m, &["rev-parse", HEAD_REF]).await
+    git(m, &["rev-parse", HEAD_REF]).await
 }
 
 /// The rev that the devshell of a repo is built from: the working tree
@@ -367,5 +380,41 @@ mod tests {
             .await
             .unwrap_err();
         assert!(format!("{err:#}").contains("does not hold"), "{err:#}");
+    }
+
+    #[tokio::test]
+    async fn clone_refuses_urls_other_than_https() {
+        let tmp = tempfile::tempdir().unwrap();
+        // A repo that root on the member can read, as the mirror of
+        // another VM.
+        let other = tmp.path().join("other");
+        std::fs::create_dir(&other).unwrap();
+        sh(
+            &other,
+            "git init -q; echo secret > f; git add f; git commit -qm a",
+        );
+        let m = tmp.path().join("mirror.git");
+        let local = other.to_string_lossy().into_owned();
+        for url in [
+            local.clone(),
+            format!("file://{local}"),
+            format!("{local}/../other"),
+            "ext::sh -c 'touch /tmp/hvw-ext'".to_owned(),
+            "ssh://git@github.com/NixOS/nixpkgs".to_owned(),
+            "git@github.com:NixOS/nixpkgs".to_owned(),
+            "http://127.0.0.1:1/x".to_owned(),
+            "git://127.0.0.1:1/x".to_owned(),
+            "https://".to_owned(),
+            "https://-oProxyCommand=x/y".to_owned(),
+            "https://github.com/a b".to_owned(),
+        ] {
+            let err = clone_into(&m, &url, None).await.unwrap_err();
+            assert!(format!("{err:#}").contains("https://"), "{url}: {err:#}");
+        }
+        assert!(
+            git(&m, &["rev-parse", "--verify", "--quiet", HEAD_REF])
+                .await
+                .is_err()
+        );
     }
 }
