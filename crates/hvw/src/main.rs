@@ -399,8 +399,11 @@ async fn launch(store: &Store, worktree: &Path, place: Place) -> Result<VmEntry>
     .await;
     if let Err(e) = r {
         // The member deletes a VM that failed to start, but not the repos
-        // that it received before.
-        destroy(store, &entry).await.ok();
+        // that it received before. A VM that exists already belongs to
+        // another launch: keep it.
+        if !format!("{e:#}").contains(hvw_link::VM_EXISTS) {
+            destroy(store, &entry).await.ok();
+        }
         return Err(e);
     }
     Ok(entry)

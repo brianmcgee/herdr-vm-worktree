@@ -13,7 +13,7 @@ use hvw_core::policy::Effective;
 use hvw_link::frame;
 use hvw_link::{
     DecideResult, Decision, FetchInfo, GitUser, LaunchRepo, Link, Peer, Pending, Reply, RepoSource,
-    Request, VmInfo, WatchEvent,
+    Request, VM_EXISTS, VmInfo, WatchEvent,
 };
 use iroh::endpoint::{Connection, RecvStream, SendStream};
 use serde_json::json;
@@ -40,6 +40,8 @@ pub struct Agent {
     next_id: AtomicU64,
     /// Watch events, with the client that they belong to.
     events: broadcast::Sender<(String, WatchEvent)>,
+    /// The VMs that a launch builds now.
+    launching: std::sync::Mutex<BTreeSet<String>>,
 }
 
 impl Agent {
@@ -107,6 +109,7 @@ pub async fn run(cfg: Config) -> Result<()> {
                 .unwrap_or(1),
         ),
         events,
+        launching: std::sync::Mutex::new(BTreeSet::new()),
     });
 
     let b = agent.clone();
@@ -213,21 +216,16 @@ async fn serve_stream(
             vm,
             repos,
             git_user,
-        } => {
-            let r = launch(
-                &agent,
-                &peer,
-                &vm,
-                &repos,
-                git_user.as_ref(),
-                &mut Progress { send: &mut send },
-            )
-            .await;
-            if r.is_err() {
-                let _ = destroy(&agent, &peer, &vm).await;
-            }
-            r.map(|info| json!(info))
-        }
+        } => launch(
+            &agent,
+            &peer,
+            &vm,
+            &repos,
+            git_user.as_ref(),
+            &mut Progress { send: &mut send },
+        )
+        .await
+        .map(|info| json!(info)),
         Request::Destroy { vm } => destroy(&agent, &peer, &vm).await.map(|()| json!(null)),
         Request::List => list(&agent, &peer).await.map(|l| json!(l)),
         Request::Attach { vm, cols, rows } => match owned(&agent, &peer, &vm).await {
@@ -357,6 +355,23 @@ async fn push(
     Ok(())
 }
 
+/// Removes a VM from the set of launching VMs when its launch ends.
+struct Launching<'a> {
+    agent: &'a Agent,
+    vm: String,
+}
+
+impl Drop for Launching<'_> {
+    fn drop(&mut self) {
+        if let Ok(mut set) = self.agent.launching.lock() {
+            set.remove(&self.vm);
+        }
+    }
+}
+
+/// Launches a VM. A launch that fails after its checks deletes what it
+/// made. A launch for a VM that runs or launches already fails before it
+/// changes anything: that VM belongs to the other launch.
 async fn launch(
     agent: &Agent,
     peer: &Peer,
@@ -375,11 +390,52 @@ async fn launch(
     if let Some(u) = git_user {
         u.validate()?;
     }
+    for lr in repos {
+        if !valid_name(&lr.name) || !valid_name(&lr.policy) {
+            bail!("bad repo or policy name in {}", lr.name);
+        }
+        cfg.policy(&lr.policy)?;
+    }
+    let _launching = {
+        let _lock = agent.lock.lock().await;
+        match state::load(cfg, vm)? {
+            Some(r) if r.client != peer.name => bail!("VM {vm} belongs to another client"),
+            Some(r) if r.launched => bail!("VM {vm} {VM_EXISTS}: it runs"),
+            _ => {}
+        }
+        let mut set = agent
+            .launching
+            .lock()
+            .map_err(|_| anyhow::anyhow!("the set of launching VMs is poisoned"))?;
+        if !set.insert(vm.to_owned()) {
+            bail!("VM {vm} {VM_EXISTS}: it launches");
+        }
+        Launching {
+            agent,
+            vm: vm.to_owned(),
+        }
+    };
+    let r = build(agent, peer, vm, repos, git_user, progress).await;
+    if r.is_err()
+        && let Err(e) = remove(agent, vm).await
+    {
+        tracing::warn!("cannot delete the failed VM {vm}: {e:#}");
+    }
+    r
+}
+
+async fn build(
+    agent: &Agent,
+    peer: &Peer,
+    vm: &str,
+    repos: &[LaunchRepo],
+    git_user: Option<&GitUser>,
+    progress: &mut Progress<'_>,
+) -> Result<VmInfo> {
+    let cfg = &agent.cfg;
     let mut rec = {
         let _lock = agent.lock.lock().await;
         let mut rec = match state::load(cfg, vm)? {
-            Some(r) if r.client != peer.name => bail!("VM {vm} belongs to another client"),
-            Some(r) if r.launched => bail!("VM {vm} runs already"),
             Some(r) => r,
             None => VmRecord {
                 name: vm.to_owned(),
@@ -393,10 +449,6 @@ async fn launch(
         };
         let mut out = Vec::new();
         for lr in repos {
-            if !valid_name(&lr.name) || !valid_name(&lr.policy) {
-                bail!("bad repo or policy name in {}", lr.name);
-            }
-            cfg.policy(&lr.policy)?;
             let r = match &lr.source {
                 RepoSource::Pushed => {
                     let mut r = rec
@@ -575,14 +627,27 @@ async fn setup_vm(cfg: &Config, rec: &VmRecord) -> Result<()> {
 }
 
 async fn destroy(agent: &Agent, peer: &Peer, vm: &str) -> Result<()> {
+    owned(agent, peer, vm).await?;
+    if agent
+        .launching
+        .lock()
+        .map_err(|_| anyhow::anyhow!("the set of launching VMs is poisoned"))?
+        .contains(vm)
+    {
+        bail!("VM {vm} launches now: destroy it when the launch ends");
+    }
+    remove(agent, vm).await
+}
+
+/// Deletes a VM, its gatekeeper and its files.
+async fn remove(agent: &Agent, vm: &str) -> Result<()> {
     let cfg = &agent.cfg;
-    let rec = owned(agent, peer, vm).await?;
     let ids: Vec<u64> = agent
         .pending
         .lock()
         .await
         .iter()
-        .filter(|(_, e)| e.info.vm == rec.name)
+        .filter(|(_, e)| e.info.vm == vm)
         .map(|(id, _)| *id)
         .collect();
     for id in ids {

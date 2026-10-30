@@ -15,6 +15,11 @@ use hvw_core::refusal::{EgressAsk, Refusal};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+/// The member puts this text in the error of a `Launch` for a VM that
+/// runs or launches already. The client must then not destroy the VM:
+/// another launch made it.
+pub const VM_EXISTS: &str = "exists already";
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "op", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Request {

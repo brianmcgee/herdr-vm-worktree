@@ -250,6 +250,20 @@ pkgs.testers.runNixOSTest {
           assert agent(name, "cat notes.txt").strip() == "uncommitted"
           assert agent(name, "git log --format=%s -1").strip() == "init"
 
+      with subtest("a second launch of the running VM fails and keeps the VM"):
+          # A herdr hook that fires twice: the second client process has
+          # no entry of the VM yet.
+          out = client.fail(
+              "sudo -u alice env XDG_RUNTIME_DIR=/run/user/1000 HOME=/home/alice"
+              " XDG_STATE_HOME=/home/alice/second-launch"
+              " sh -c 'cd /home/alice/work/repo && hvw launch' 2>&1",
+              timeout=900,
+          )
+          assert "exists already" in out, out
+          member.succeed(f"incus list -f csv -c ns {name} | grep -qx '{name},RUNNING'")
+          assert agent(name, "cat notes.txt").strip() == "uncommitted"
+          assert [v["name"] for v in json.loads(alice("hvw list --json"))] == [name]
+
       with subtest("the devshell works in the VM, and only its closure is there"):
           assert "Hello, world!" in agent(name, "hello")
           vm(member, name, "test ! -e ${flake.packages.${system}.iron-proxy}")
