@@ -5,6 +5,8 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::policy::Grant;
+
 /// One request that the gatekeeper refused.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Refusal {
@@ -15,6 +17,34 @@ pub struct Refusal {
     pub method: String,
     /// Empty for CONNECT.
     pub path: String,
+}
+
+impl Refusal {
+    /// The grant that allows exactly this request, and nothing more: the
+    /// user sees only the refusal, so the grant must not be wider. A
+    /// refused CONNECT gives the tunnel to the host only. `None` if no
+    /// grant can be this narrow: a `*` in the host or the path is a pattern
+    /// in a grant, and a request other than CONNECT has a path.
+    pub fn grant(&self) -> Option<Grant> {
+        if self.host.is_empty() || self.host.contains('*') {
+            return None;
+        }
+        if self.method == "CONNECT" {
+            return Some(Grant {
+                host: self.host.clone(),
+                methods: vec![self.method.clone()],
+                paths: vec![],
+            });
+        }
+        if self.path.is_empty() || self.path.contains('*') {
+            return None;
+        }
+        Some(Grant {
+            host: self.host.clone(),
+            methods: vec![self.method.clone()],
+            paths: vec![self.path.clone()],
+        })
+    }
 }
 
 /// What the agent asks for. `None` means "any".
@@ -250,6 +280,34 @@ mod tests {
         assert!(!path_matches("/a/*/c", "/a/b/x/c"));
         assert!(path_matches("/a", "/a"));
         assert!(!path_matches("/a", "/a/"));
+    }
+
+    #[test]
+    fn grant_is_the_refused_request() {
+        let r = parse(GET).unwrap();
+        assert_eq!(
+            r.grant(),
+            Some(Grant {
+                host: "denied.test".into(),
+                methods: vec!["GET".into()],
+                paths: vec!["/foo/bar".into()],
+            })
+        );
+        // A refused tunnel gives the tunnel only. The requests in it are
+        // refused and asked for one by one.
+        assert_eq!(
+            parse(CONNECT).unwrap().grant(),
+            Some(Grant {
+                host: "other.test".into(),
+                methods: vec!["CONNECT".into()],
+                paths: vec![],
+            })
+        );
+        // A `*` in a grant matches more than the refused request.
+        let star = GET.replace("/foo/bar", "/foo/*");
+        assert_eq!(parse(&star).unwrap().grant(), None);
+        let star = CONNECT.replace("Other.test:443", "*.test:443");
+        assert_eq!(parse(&star).unwrap().grant(), None);
     }
 
     #[test]

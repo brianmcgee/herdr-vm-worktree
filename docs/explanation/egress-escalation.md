@@ -31,6 +31,23 @@ matching request recently. The popup then shows the exact host, method
 and path that the gatekeeper refused, next to the reason of the agent.
 You judge the real request, not only the words of the agent.
 
+The grant allows that refused request and nothing more. The method and
+the path of the agent only select the refusal. They never make the
+grant wider:
+
+| Refused request | Grant |
+|---|---|
+| `GET example.org /x` | `GET` on the path `/x` of `example.org` |
+| `CONNECT example.org` (HTTPS) | the tunnel to `example.org` only |
+
+After a grant of the tunnel, the gatekeeper sees the requests in the
+tunnel. It refuses each one that the policy does not allow, and the
+agent asks again for it. Thus a new HTTPS host needs two decisions: one
+for the tunnel, one for the request. The broker refuses to forward a
+refusal whose host or path holds `*`, because a grant reads `*` as a
+pattern. To allow a whole host or a path pattern, put it in the policy
+in Nix.
+
 A request names a host, a method and a path. It never names a secret.
 
 ## The three decisions

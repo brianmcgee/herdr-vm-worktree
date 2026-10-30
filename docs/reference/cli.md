@@ -120,13 +120,14 @@ egress-request HOST [--method METHOD] [--path PATH] --reason TEXT
 
 Asks the user to allow a request that the gatekeeper refused. Make the
 request first. The command blocks until the user decides, for at most 30
-minutes.
+minutes. An allowed request opens only the refused request: for HTTPS,
+first the tunnel to the host, then each request in it.
 
 | Argument | Meaning |
 |---|---|
 | `HOST` | The host of the refused request. |
-| `--method` | The HTTP method. Without it: all methods. |
-| `--path` | The path. A `*` at the end matches all paths below it. Without it: all paths. |
+| `--method` | Selects the refusal by its method. Without it: a refusal with any method. |
+| `--path` | Selects the refusal by its path. A `*` at the end matches all paths below it. Without it: a refusal with any path. |
 | `--reason` | Why the task needs the host. The user reads it. |
 | `--broker` | The broker URL. Default: `$HVW_BROKER`, which the VM sets. |
 

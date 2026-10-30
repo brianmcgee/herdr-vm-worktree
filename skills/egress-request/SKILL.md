@@ -18,14 +18,17 @@ the requests that it allows.
    request, and the reason:
 
    ```sh
-   egress-request api.example.org --method GET --path '/v1/items/*' \
+   egress-request api.example.org --method GET --path /v1/items \
      --reason "The tests download the item list from api.example.org"
    ```
 
    - Use the same host, method and path as the refused request. The
      broker accepts a request only if the gatekeeper refused a matching
      request in the last 15 minutes.
-   - A `*` at the end of the path matches all paths below it.
+   - The user allows only the refused request: one method on one path.
+     For HTTPS, the first refusal is the tunnel (CONNECT) to the host.
+     When the user allows it, make the request again. The gatekeeper
+     can then refuse the request in the tunnel. Ask again for that one.
    - The reason is for the user. Write one clear sentence.
 3. The command blocks until the user decides, for at most 30 minutes.
    Do not stop it.

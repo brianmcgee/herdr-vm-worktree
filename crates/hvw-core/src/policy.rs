@@ -258,6 +258,9 @@ pub fn grants_as_nix(policy: &str, grants: &[Grant]) -> String {
             "    {{ host = {}; methods = [ \"CONNECT\" ]; }}",
             nix_string(&g.host)
         ));
+        if g.methods == ["CONNECT"] && g.paths.is_empty() {
+            continue;
+        }
         let mut fields = vec![format!("host = {};", nix_string(&g.host))];
         if !g.methods.is_empty() {
             fields.push(format!("methods = {};", nix_list(&g.methods)));
@@ -509,6 +512,18 @@ mod tests {
                 }]
             ),
             "policies.\"my.policy\".domains = [\n    \"a\"\n];\n"
+        );
+        // A grant of the tunnel only gives one CONNECT rule.
+        assert_eq!(
+            grants_as_nix(
+                "p",
+                &[Grant {
+                    host: "a".into(),
+                    methods: vec!["CONNECT".into()],
+                    paths: vec![]
+                }]
+            ),
+            "policies.p.rules = [\n    { host = \"a\"; methods = [ \"CONNECT\" ]; }\n];\n"
         );
     }
 }

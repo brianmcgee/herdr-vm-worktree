@@ -108,15 +108,25 @@ hvw pending
 hvw decide <id> vm
 ```
 
-`<id>` is in the `ID` column of `hvw pending`. In the VM,
-`egress-request` prints `allowed (vm): make the request again`. Try
-again:
+`<id>` is in the `ID` column of `hvw pending`. `hvw pending` shows
+`CONNECT example.com`: the grant opens the tunnel to `example.com` only.
+In the VM, `egress-request` prints `allowed (vm): make the request
+again`. Try again:
 
 ```sh
+curl -s -o /dev/null -w '%{http_code}\n' https://example.com/        # 403
+```
+
+Now the gatekeeper sees the request in the tunnel, `GET /`, and refuses
+it. Ask again, and allow `GET example.com /` with `hvw decide <id> vm`:
+
+```sh
+egress-request example.com --method GET --path / --reason "the tutorial needs it"
 curl -s -o /dev/null -w '%{http_code}\n' https://example.com/        # 200
 ```
 
-The grant is for this VM only. It goes away with the VM.
+Each grant allows only the request that you saw. The grants are for
+this VM only. They go away with the VM.
 
 ## 6. Commit in the VM
 

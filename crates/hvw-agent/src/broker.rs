@@ -6,6 +6,7 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
 
+use anyhow::Context;
 use axum::extract::{ConnectInfo, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
@@ -105,6 +106,14 @@ async fn egress(
             ) }),
         );
     };
+    // The user sees only the refusal. The grant allows that request and
+    // nothing more.
+    if refused.grant().is_none() {
+        return reply(
+            StatusCode::BAD_REQUEST,
+            json!({ "error": "a grant cannot allow only the refused request: its host or path holds `*`" }),
+        );
+    }
     let pending = Pending {
         id: 0,
         vm: rec.name.clone(),
@@ -165,15 +174,6 @@ impl Drop for WithdrawOnDrop {
     }
 }
 
-/// The grant that a request asks for.
-pub fn grant_of(ask: &EgressAsk) -> hvw_core::policy::Grant {
-    hvw_core::policy::Grant {
-        host: ask.host.clone(),
-        methods: ask.method.iter().cloned().collect(),
-        paths: ask.path.iter().cloned().collect(),
-    }
-}
-
 /// Applies an approved request to the VM. The grant lives as long as the
 /// VM. With scope policy, also returns the Nix change that adds the grant
 /// to the policies of the VM, for the clan repo.
@@ -189,7 +189,10 @@ pub async fn apply(
     let Some(mut rec) = state::load(&agent.cfg, &p.vm)? else {
         anyhow::bail!("VM {} is gone", p.vm);
     };
-    let grant = grant_of(&p.ask);
+    let grant = p
+        .refusal
+        .grant()
+        .context("a grant cannot allow only the refused request")?;
     if !rec.grants.contains(&grant) {
         rec.grants.push(grant.clone());
     }

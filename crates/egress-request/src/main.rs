@@ -18,18 +18,19 @@ use serde_json::{Value, json};
 /// First make the request. When the gatekeeper refuses it (status 403),
 /// run this command with the same host, method and path. The command
 /// waits for the decision of the user. When the user allows the request,
-/// make the request again.
+/// make the request again. The user allows only the refused request: for
+/// HTTPS, first the tunnel to the host, then each request in it.
 #[derive(Parser)]
 #[command(version)]
 struct Args {
     /// The host of the refused request, for example `api.example.org`.
     host: String,
-    /// The HTTP method of the refused request. Without it, the request
-    /// asks for all methods.
+    /// The HTTP method of the refused request. Without it, a refusal
+    /// with any method matches.
     #[arg(long)]
     method: Option<String>,
     /// The path of the refused request. A `*` at the end matches all
-    /// paths below it. Without it, the request asks for all paths.
+    /// paths below it. Without it, a refusal with any path matches.
     #[arg(long)]
     path: Option<String>,
     /// Why the task needs this host. The user reads it.

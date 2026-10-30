@@ -167,6 +167,7 @@ pkgs.testers.runNixOSTest {
     { nodes, ... }:
     ''
       import json
+      import time
 
       ${builtins.readFile ../tests/common.py}
 
@@ -324,8 +325,50 @@ pkgs.testers.runNixOSTest {
           alice(f"hvw decide {rid} vm")
           member.wait_until_succeeds(vm_command(name, "test -e /tmp/er.rc"), timeout=120)
           assert vm(member, name, "cat /tmp/er.rc").strip() == "0"
+          # The popup showed the refused CONNECT, so the grant opens the
+          # tunnel only. The gatekeeper now sees the request in it and
+          # refuses it, and the agent asks again.
+          code = agent(
+              name,
+              "curl -s -o /dev/null -w %{http_code} https://other.example.test/y || true",
+          )
+          assert code.strip() == "403", code
+          vm(
+              member,
+              name,
+              "systemd-run --unit=er3 --uid=1000 --working-directory=/work/repo"
+              " bash -l -c 'egress-request other.example.test --reason \"the test needs it\";"
+              " echo $? > /tmp/er3.rc'",
+          )
+          def get_y():
+              return [
+                  p["id"]
+                  for p in json.loads(alice("hvw pending --json"))
+                  if (p["refusal"]["method"], p["refusal"]["host"], p["refusal"]["path"])
+                  == ("GET", "other.example.test", "/y")
+              ]
+
+          for _ in range(120):
+              if get_y():
+                  break
+              time.sleep(1)
+          rid = get_y()[0]
+          alice(f"hvw decide {rid} vm")
+          member.wait_until_succeeds(vm_command(name, "test -e /tmp/er3.rc"), timeout=120)
+          assert vm(member, name, "cat /tmp/er3.rc").strip() == "0"
           out = agent(name, "curl -sf https://other.example.test/y")
           assert json.loads(out)["host"] == "other.example.test", out
+
+      with subtest("a grant allows the refused request only, not the wider ask"):
+          # The second ask named no method and no path, but the user saw
+          # only GET /y.
+          code = agent(
+              name,
+              "curl -s -o /dev/null -w %{http_code} https://other.example.test/z || true",
+          )
+          assert code.strip() == "403", code
+          gk = json.loads(member.succeed(f"cat /var/lib/hvw/vms/{name}/gatekeeper/config.json"))
+          assert "other.example.test" not in gk["transforms"][0]["config"]["domains"], gk
 
       with subtest("a denied egress request fails"):
           agent(name, "curl -s -o /dev/null https://denied.example.test/ || true")
