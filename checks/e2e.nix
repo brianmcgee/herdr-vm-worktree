@@ -253,6 +253,24 @@ pkgs.testers.runNixOSTest {
           assert "Hello, world!" in agent(name, "hello")
           vm(member, name, "test ! -e ${flake.packages.${system}.iron-proxy}")
 
+      with subtest("the harness user can build with nix in the VM, from paths of the farm"):
+          # The bash of the devshell is in the farm, not in the image. The
+          # nix daemon must see the farm layers of /nix/store to use it.
+          bash = agent(name, "command -v bash | cut -d/ -f1-4").strip()
+          assert bash.startswith("/nix/store/"), bash
+          expr = (
+              'derivation { name = "vm-build"; system = builtins.currentSystem;'
+              ' builder = builtins.storePath "' + bash + '" + "/bin/bash";'
+              ' args = [ "-c" "echo built > $out" ]; }'
+          )
+          # The VM has no binary cache: the build must not wait for one.
+          out = agent(
+              name,
+              "nix build --impure --no-link --print-out-paths --option substituters '''"
+              f" --expr {shlex.quote(expr)}",
+          ).strip()
+          assert agent(name, f"cat {out}").strip() == "built", out
+
       with subtest("the VM holds the placeholder, the gatekeeper injects the secret"):
           env = agent(name, "env")
           assert "WEB_TOKEN=${placeholder}" in env, env

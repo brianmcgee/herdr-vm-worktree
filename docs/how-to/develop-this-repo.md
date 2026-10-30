@@ -57,7 +57,7 @@ nix build .#checks.x86_64-linux.e2e               # full round trip
 |---|---|
 | `clan` | The clan service evaluates. Peers, relay and credentials are correct. |
 | `incus-vm` | A member imports the image and boots a worktree VM. |
-| `e2e` | Launch with a dirty repo and a devshell, credential injection, no gatekeeper access for a non-root member user, refused host, egress request and decision, fetch, destroy. |
+| `e2e` | Launch with a dirty repo and a devshell, a Nix build in the VM from paths of the farm, credential injection, no gatekeeper access for a non-root member user, refused host, egress request and decision, fetch, destroy. |
 
 `incus-vm` and `e2e` need nested KVM: the worktree VM runs at the third
 level of nesting. On a host without it, they fail with a clear message.
