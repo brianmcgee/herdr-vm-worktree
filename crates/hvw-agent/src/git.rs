@@ -82,27 +82,31 @@ async fn receive_into<R: AsyncRead + Unpin>(
 ) -> Result<()> {
     init_mirror(m).await?;
     let file = m.join("incoming.bundle");
-    {
+    let file_s = file.to_string_lossy().into_owned();
+    let r = async {
         let mut f = tokio::fs::File::create(&file).await?;
-        tokio::io::copy(bundle, &mut f)
+        hvw_link::copy_limited(bundle, &mut f, hvw_link::MAX_BUNDLE)
             .await
             .context("cannot receive the bundle")?;
         f.flush().await?;
+        git(
+            m,
+            &[
+                "fetch",
+                "--quiet",
+                "--no-tags",
+                "--prune",
+                &file_s,
+                "+refs/*:refs/incoming/*",
+            ],
+        )
+        .await
     }
-    let file_s = file.to_string_lossy().into_owned();
-    let r = git(
-        m,
-        &[
-            "fetch",
-            "--quiet",
-            "--no-tags",
-            "--prune",
-            &file_s,
-            "+refs/*:refs/incoming/*",
-        ],
-    )
     .await;
-    std::fs::remove_file(&file)?;
+    match std::fs::remove_file(&file) {
+        Err(e) if e.kind() != std::io::ErrorKind::NotFound => return Err(e.into()),
+        _ => {}
+    }
     r?;
     set_ref(m, HEAD_REF, &repo.commit).await?;
     match &repo.stash {
@@ -267,7 +271,8 @@ rm -f "$b"
 }
 
 /// Writes a bundle of the branches of a repo in the VM. Returns the branch
-/// that is checked out.
+/// that is checked out. A bundle larger than [`hvw_link::MAX_BUNDLE`] is
+/// an error.
 pub async fn fetch<W: AsyncWrite + Unpin>(
     cfg: &Config,
     vm: &str,
@@ -282,14 +287,13 @@ pub async fn fetch<W: AsyncWrite + Unpin>(
     .run(b"")
     .await?;
     let head = head_of(&head);
-    let bundle = user_exec(
+    user_exec(
         cfg,
         vm,
         &format!("cd /work/{repo} && git bundle create --quiet - --branches"),
     )
-    .run(b"")
+    .run_into(b"", out, hvw_link::MAX_BUNDLE)
     .await?;
-    out.write_all(&bundle).await?;
     Ok(head)
 }
 

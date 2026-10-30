@@ -9,6 +9,7 @@ use http_body_util::{BodyExt, Full};
 use hyper::{Method, Request};
 use hyper_util::rt::TokioIo;
 use serde_json::{Value, json};
+use tokio::io::{AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::net::UnixStream;
 use tokio::process::Command;
 
@@ -277,9 +278,23 @@ impl Exec {
         c
     }
 
-    /// Runs the command with `input` on stdin and returns its stdout.
+    /// Runs the command with `input` on stdin and returns its stdout. The
+    /// VM controls the output, so more than [`MAX_OUTPUT`] bytes is an
+    /// error.
     pub async fn run(&self, input: &[u8]) -> Result<Vec<u8>> {
-        use tokio::io::AsyncWriteExt;
+        let mut out = Vec::new();
+        self.run_into(input, &mut out, MAX_OUTPUT).await?;
+        Ok(out)
+    }
+
+    /// Runs the command with `input` on stdin and copies its stdout to
+    /// `out`. Fails when stdout has more than `max` bytes.
+    pub async fn run_into<W: AsyncWrite + Unpin>(
+        &self,
+        input: &[u8],
+        out: &mut W,
+        max: u64,
+    ) -> Result<()> {
         let mut child = self
             .command()
             .stdin(Stdio::piped())
@@ -288,23 +303,43 @@ impl Exec {
             .spawn()
             .context("cannot run incus")?;
         let mut stdin = child.stdin.take().context("no stdin")?;
+        let mut stdout = child.stdout.take().context("no stdout")?;
+        let mut stderr = child.stderr.take().context("no stderr")?;
         let input = input.to_vec();
         let writer = tokio::spawn(async move {
             let r = stdin.write_all(&input).await;
             drop(stdin);
             r
         });
-        let out = child.wait_with_output().await?;
+        // Keep the start of stderr, and read the rest so that the command
+        // does not block on a full pipe.
+        let errors = tokio::spawn(async move {
+            let mut buf = Vec::new();
+            let _ = (&mut stderr).take(MAX_STDERR).read_to_end(&mut buf).await;
+            let _ = tokio::io::copy(&mut stderr, &mut tokio::io::sink()).await;
+            buf
+        });
+        let copied = hvw_link::copy_limited(&mut stdout, out, max).await;
+        if copied.is_err() {
+            child.kill().await.ok();
+        }
+        let status = child.wait().await?;
+        let stderr = errors.await?;
+        copied.with_context(|| format!("{} in {}", self.argv.join(" "), self.vm))?;
         writer.await??;
-        if !out.status.success() {
+        if !status.success() {
             bail!(
-                "{} in {} failed ({}): {}",
+                "{} in {} failed ({status}): {}",
                 self.argv.join(" "),
                 self.vm,
-                out.status,
-                String::from_utf8_lossy(&out.stderr).trim()
+                String::from_utf8_lossy(&stderr).trim()
             );
         }
-        Ok(out.stdout)
+        Ok(())
     }
 }
+
+/// The largest stdout of [`Exec::run`].
+const MAX_OUTPUT: u64 = 16 << 20;
+/// The part of stderr that an error message keeps.
+const MAX_STDERR: u64 = 64 << 10;

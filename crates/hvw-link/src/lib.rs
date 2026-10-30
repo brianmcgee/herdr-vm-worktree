@@ -151,3 +151,43 @@ pub async fn read_reply<R: tokio::io::AsyncRead + Unpin>(
         }
     }
 }
+
+/// The largest git bundle that a client or a member accepts.
+pub const MAX_BUNDLE: u64 = 4 << 30;
+
+/// Copies `r` to `w`, but fails when `r` has more than `max` bytes. The
+/// other side cannot fill the disk or the memory of the receiver.
+pub async fn copy_limited<R, W>(r: &mut R, w: &mut W, max: u64) -> Result<u64>
+where
+    R: tokio::io::AsyncRead + Unpin,
+    W: tokio::io::AsyncWrite + Unpin,
+{
+    use tokio::io::AsyncReadExt;
+    let n = tokio::io::copy(&mut r.take(max + 1), w).await?;
+    if n > max {
+        bail!("the git bundle is larger than {max} bytes");
+    }
+    Ok(n)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn copy_stops_at_the_limit() {
+        let data = vec![7u8; 1000];
+        let mut out = Vec::new();
+        assert_eq!(
+            copy_limited(&mut &data[..], &mut out, 1000).await.unwrap(),
+            1000
+        );
+        assert_eq!(out, data);
+        let mut out = Vec::new();
+        let e = copy_limited(&mut &data[..], &mut out, 999)
+            .await
+            .unwrap_err();
+        assert!(e.to_string().contains("larger than 999 bytes"), "{e}");
+        assert!(out.len() <= 1000);
+    }
+}

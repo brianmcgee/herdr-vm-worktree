@@ -17,7 +17,7 @@ use hvw_link::{
 };
 use iroh::endpoint::{Connection, RecvStream, SendStream};
 use serde_json::json;
-use tokio::io::AsyncWrite;
+use tokio::io::{AsyncSeekExt, AsyncWrite};
 use tokio::sync::{Mutex, broadcast, oneshot};
 
 use crate::config::{Config, env_file};
@@ -253,13 +253,21 @@ async fn serve_stream(
             let rec = owned(&agent, &peer, &vm).await;
             match rec.and_then(|r| r.repo(&repo).cloned().context("no such repo in the VM")) {
                 Ok(_) => {
-                    // The bundle goes to a buffer first, so that an error
-                    // can still be a frame.
-                    let mut buf = Vec::new();
-                    match git::fetch(&agent.cfg, &vm, &repo, &mut buf).await {
-                        Ok(head) => {
+                    // The bundle goes to an unnamed file first, so that an
+                    // error can still be a frame. Memory stays small.
+                    let r = async {
+                        let mut file = tokio::fs::File::from_std(tempfile::tempfile_in(
+                            agent.cfg.vm_dir(&vm),
+                        )?);
+                        let head = git::fetch(&agent.cfg, &vm, &repo, &mut file).await?;
+                        file.rewind().await?;
+                        anyhow::Ok((file, head))
+                    }
+                    .await;
+                    match r {
+                        Ok((mut file, head)) => {
                             frame::write(&mut send, &Reply::Ok(json!(FetchInfo { head }))).await?;
-                            send.write_all(&buf).await?;
+                            tokio::io::copy(&mut file, &mut send).await?;
                             send.finish()?;
                             send.stopped().await.ok();
                             return Ok(());
