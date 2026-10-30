@@ -75,8 +75,10 @@ change is in the clan repo, and goes through review and a deploy.
 - **deny**: `egress-request` exits with status 1. The agent must not try
   again.
 
-The broker waits 30 minutes for a decision. The broker reloads
-iron-proxy through its management API, without a restart of the process.
+The broker waits 30 minutes for a decision. A VM can have at most 8
+requests that wait at one time. The broker refuses more with status 429.
+The broker reloads iron-proxy through its management API, without a
+restart of the process.
 
 ## The risk
 

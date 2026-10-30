@@ -150,6 +150,7 @@ async fn serve_local(w: &Watch, mut sock: UnixStream) -> Result<()> {
 async fn watch_member(w: Arc<Watch>, member: String) {
     let mut delay = Duration::from_secs(1);
     loop {
+        let started = tokio::time::Instant::now();
         match watch_once(&w, &member).await {
             Ok(()) => tracing::info!("{member} closed the watch"),
             Err(e) => tracing::info!("watch of {member}: {e:#}"),
@@ -162,6 +163,11 @@ async fn watch_member(w: Arc<Watch>, member: String) {
         };
         if !gone.is_empty() {
             publish(&w, &gone).await;
+        }
+        // A watch that ran for a while worked: the member closes it, for
+        // example when the watcher lost events. Connect again soon.
+        if started.elapsed() > Duration::from_secs(60) {
+            delay = Duration::from_secs(1);
         }
         tokio::time::sleep(delay).await;
         delay = (delay * 2).min(Duration::from_secs(60));

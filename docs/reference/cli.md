@@ -135,7 +135,7 @@ first the tunnel to the host, then each request in it.
 |---|---|
 | 0 | Allowed. Make the request again. |
 | 1 | Denied. Do not make the request again. |
-| 2 | Other error, for example no matching refusal. |
+| 2 | Other error, for example no matching refusal, or 8 requests of the VM wait already. |
 
 ## `hvw-agent` (member)
 

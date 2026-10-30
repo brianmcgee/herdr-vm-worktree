@@ -17,6 +17,7 @@ use hvw_link::{
 };
 use iroh::endpoint::{Connection, RecvStream, SendStream};
 use serde_json::json;
+use tokio::io::AsyncWrite;
 use tokio::sync::{Mutex, broadcast, oneshot};
 
 use crate::config::{Config, env_file};
@@ -44,6 +45,10 @@ pub struct Agent {
     launching: std::sync::Mutex<BTreeSet<String>>,
 }
 
+/// The most requests of one VM that wait for a decision at one time. A VM
+/// cannot fill the memory of the member or the view of the user.
+pub const MAX_PENDING_PER_VM: usize = 8;
+
 impl Agent {
     pub async fn vm_by_address(&self, ip: IpAddr) -> Option<VmRecord> {
         let records = state::all(&self.cfg).ok()?;
@@ -52,15 +57,24 @@ impl Agent {
             .find(|r| r.launched && self.cfg.vm_address(r.slot).ok().map(IpAddr::V4) == Some(ip))
     }
 
+    /// Adds a request that waits for a decision. Fails if the VM has
+    /// [`MAX_PENDING_PER_VM`] requests that wait already.
     pub async fn add_pending(
         &self,
         client: &str,
         mut info: Pending,
-    ) -> (u64, oneshot::Receiver<Decision>) {
+    ) -> Result<(u64, oneshot::Receiver<Decision>)> {
+        let mut pending = self.pending.lock().await;
+        if pending.values().filter(|e| e.info.vm == info.vm).count() >= MAX_PENDING_PER_VM {
+            bail!(
+                "VM {} has {MAX_PENDING_PER_VM} requests that wait for a decision: wait for them",
+                info.vm
+            );
+        }
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
         info.id = id;
         let (tx, rx) = oneshot::channel();
-        self.pending.lock().await.insert(
+        pending.insert(
             id,
             PendingEntry {
                 info: info.clone(),
@@ -71,7 +85,7 @@ impl Agent {
         let _ = self
             .events
             .send((client.to_owned(), WatchEvent::Pending(Box::new(info))));
-        (id, rx)
+        Ok((id, rx))
     }
 
     pub async fn withdraw(&self, id: u64) {
@@ -712,12 +726,23 @@ async fn watch(agent: &Agent, peer: &Peer, mut send: SendStream) -> Result<()> {
     for p in current {
         frame::write(&mut send, &WatchEvent::Pending(Box::new(p))).await?;
     }
+    forward(&mut rx, &peer.name, &mut send).await
+}
+
+/// Writes the events of `client` to `out`. If the channel dropped events,
+/// this fails: the watcher then misses a request or a withdrawal. The
+/// client connects again and gets the full list of requests.
+async fn forward<W: AsyncWrite + Unpin>(
+    rx: &mut broadcast::Receiver<(String, WatchEvent)>,
+    client: &str,
+    out: &mut W,
+) -> Result<()> {
     loop {
         match rx.recv().await {
-            Ok((client, ev)) if client == peer.name => frame::write(&mut send, &ev).await?,
+            Ok((c, ev)) if c == client => frame::write(out, &ev).await?,
             Ok(_) => {}
             Err(broadcast::error::RecvError::Lagged(n)) => {
-                tracing::warn!("a watcher lost {n} events");
+                bail!("the watcher lost {n} events: connect again");
             }
             Err(broadcast::error::RecvError::Closed) => return Ok(()),
         }
@@ -746,4 +771,105 @@ async fn decide(agent: &Agent, peer: &Peer, id: u64, decision: Decision) -> Resu
         ));
     }
     Ok(DecideResult { nix })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use hvw_core::refusal::{EgressAsk, Refusal};
+
+    fn agent(events: broadcast::Sender<(String, WatchEvent)>) -> Agent {
+        let cfg: Config = serde_json::from_value(json!({
+            "name": "m1",
+            "link": "/etc/hvw/link.json",
+            "state_dir": "/var/lib/hvw",
+            "policies_dir": "/etc/hvw/policies",
+            "incus_socket": "/var/lib/incus/unix.socket",
+            "image": "hvw",
+            "storage_pool": "hvw",
+            "bridge": { "name": "hvwbr0", "address": "10.250.0.1", "prefix_length": 24 },
+            "broker_port": 7300,
+            "gatekeeper_port_base": 20000,
+            "vm": {
+                "cpus": 2, "memory": "2GiB", "user": "agent",
+                "uid": 1000, "gid": 100, "harness": ["bash"]
+            },
+            "farm_retention_days": 14
+        }))
+        .unwrap();
+        Agent {
+            incus: Incus::new(&cfg.incus_socket),
+            cfg,
+            lock: Mutex::new(()),
+            pending: Mutex::new(BTreeMap::new()),
+            next_id: AtomicU64::new(1),
+            events,
+            launching: std::sync::Mutex::new(BTreeSet::new()),
+        }
+    }
+
+    fn ask(vm: &str, path: &str) -> Pending {
+        Pending {
+            id: 0,
+            vm: vm.into(),
+            member: "m1".into(),
+            ask: EgressAsk {
+                host: "api.example.org".into(),
+                method: Some("GET".into()),
+                path: Some(path.into()),
+            },
+            reason: "read the API docs".into(),
+            refusal: Refusal {
+                time: "2026-01-01T00:00:00Z".into(),
+                host: "api.example.org".into(),
+                method: "GET".into(),
+                path: path.into(),
+            },
+            policies: vec!["web".into()],
+            created: 0,
+        }
+    }
+
+    #[tokio::test]
+    async fn a_vm_has_a_limited_number_of_waiting_requests() {
+        let (events, _) = broadcast::channel(256);
+        let a = agent(events);
+        let mut ids = vec![];
+        for n in 0..MAX_PENDING_PER_VM {
+            let (id, _rx) = a
+                .add_pending("alice", ask("hvw-a", &format!("/{n}")))
+                .await
+                .unwrap();
+            ids.push(id);
+        }
+        let e = a
+            .add_pending("alice", ask("hvw-a", "/x"))
+            .await
+            .unwrap_err();
+        assert!(e.to_string().contains("wait for a decision"), "{e}");
+        // Other VMs are not affected.
+        a.add_pending("alice", ask("hvw-b", "/x")).await.unwrap();
+        // A decision or a withdrawal frees a place.
+        a.withdraw(ids[0]).await;
+        a.add_pending("alice", ask("hvw-a", "/x")).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_watcher_that_lost_events_stops() {
+        let (events, mut rx) = broadcast::channel(2);
+        for id in 0..4 {
+            events
+                .send((
+                    "alice".into(),
+                    WatchEvent::Withdrawn {
+                        id,
+                        vm: "hvw-a".into(),
+                    },
+                ))
+                .unwrap();
+        }
+        let (mut w, _r) = tokio::io::duplex(1 << 16);
+        let e = forward(&mut rx, "alice", &mut w).await.unwrap_err();
+        assert!(e.to_string().contains("lost 2 events"), "{e}");
+    }
 }

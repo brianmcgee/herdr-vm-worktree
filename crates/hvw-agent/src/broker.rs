@@ -127,7 +127,15 @@ async fn egress(
             .map(|d| d.as_secs())
             .unwrap_or(0),
     };
-    let (id, rx) = agent.add_pending(&rec.client, pending).await;
+    let (id, rx) = match agent.add_pending(&rec.client, pending).await {
+        Ok(v) => v,
+        Err(e) => {
+            return reply(
+                StatusCode::TOO_MANY_REQUESTS,
+                json!({ "error": e.to_string() }),
+            );
+        }
+    };
     // The guard withdraws the request when the agent in the VM gives up
     // (the connection drops and axum drops this future).
     let guard = WithdrawOnDrop {
