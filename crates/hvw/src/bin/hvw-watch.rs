@@ -225,11 +225,17 @@ async fn toast(w: &Watch, p: &Pending) {
 }
 
 /// Writes the pending file and updates herdr for the VMs of `changed`.
+/// The write holds the lock, so that an older list never replaces a newer
+/// one.
 async fn publish(w: &Watch, changed: &[Pending]) {
-    let all: Vec<Pending> = w.pending.lock().await.values().cloned().collect();
-    if let Err(e) = w.store.save_pending(&all) {
-        tracing::warn!("cannot write the pending requests: {e:#}");
-    }
+    let all: Vec<Pending> = {
+        let p = w.pending.lock().await;
+        let all: Vec<Pending> = p.values().cloned().collect();
+        if let Err(e) = w.store.save_pending(&all) {
+            tracing::warn!("cannot write the pending requests: {e:#}");
+        }
+        all
+    };
     let mut vms: Vec<&str> = changed.iter().map(|p| p.vm.as_str()).collect();
     vms.sort();
     vms.dedup();

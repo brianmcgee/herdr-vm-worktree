@@ -110,13 +110,15 @@ fn read_json<T: serde::de::DeserializeOwned>(path: &Path) -> Result<Option<T>> {
 }
 
 /// Writes a file through a temporary file and a rename, so that a reader
-/// never sees half a file.
+/// never sees half a file. Each write has its own temporary file, so that
+/// writers at the same time do not mix their data.
 fn write_json<T: Serialize>(path: &Path, value: &T) -> Result<()> {
+    use std::io::Write;
     let dir = path.parent().context("a state file has no directory")?;
     std::fs::create_dir_all(dir)?;
-    let tmp = path.with_extension("json.tmp");
-    std::fs::write(&tmp, serde_json::to_vec_pretty(value)?)?;
-    std::fs::rename(&tmp, path)?;
+    let mut tmp = tempfile::NamedTempFile::new_in(dir)?;
+    tmp.write_all(&serde_json::to_vec_pretty(value)?)?;
+    tmp.persist(path)?;
     Ok(())
 }
 
@@ -150,5 +152,21 @@ mod tests {
         store.remove("hvw-a-1").unwrap();
         assert_eq!(store.all().unwrap(), vec![a]);
         assert!(store.load("../x").is_err());
+    }
+
+    #[test]
+    fn concurrent_writers_leave_a_whole_file() {
+        let tmp = tempfile::tempdir().unwrap();
+        let store = Store::new(tmp.path().to_owned());
+        std::thread::scope(|s| {
+            for _ in 0..8 {
+                s.spawn(|| {
+                    for _ in 0..100 {
+                        store.save_pending(&[]).unwrap();
+                    }
+                });
+            }
+        });
+        assert!(store.pending().unwrap().is_empty());
     }
 }
