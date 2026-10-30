@@ -18,7 +18,14 @@
   outputs =
     inputs:
     let
-      outputs = inputs.blueprint { inherit inputs; };
+      outputs = inputs.blueprint {
+        inherit inputs;
+        # Members, clients and worktree VMs are NixOS machines.
+        systems = [
+          "x86_64-linux"
+          "aarch64-linux"
+        ];
+      };
     in
     # clan-core looks for clan services in the `clan.modules` output.
     outputs // { clan.modules = outputs.modules.clan; };
