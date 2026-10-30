@@ -15,6 +15,10 @@ use tokio::process::Command;
 /// The PATH of commands in a VM. Incus does not use the PATH of NixOS.
 pub const VM_PATH: &str = "/run/wrappers/bin:/run/current-system/sw/bin";
 
+/// The Incus config key that holds the client of a VM that hvw made. hvw
+/// deletes only instances with this key.
+pub const OWNER_KEY: &str = "user.hvw.client";
+
 #[derive(Clone)]
 pub struct Incus {
     socket: PathBuf,
@@ -113,10 +117,17 @@ impl Incus {
         Ok(())
     }
 
-    pub async fn delete_instance(&self, name: &str) -> Result<()> {
+    /// Deletes an instance that hvw made for the client `owner`. An
+    /// instance without this owner in [`OWNER_KEY`] stays, and the result
+    /// is `false`.
+    pub async fn delete_instance(&self, name: &str, owner: &str) -> Result<bool> {
         let path = format!("/1.0/instances/{name}");
         if !self.exists(&path).await? {
-            return Ok(());
+            return Ok(true);
+        }
+        let instance = self.call(Method::GET, &path, None).await?;
+        if instance["config"][OWNER_KEY].as_str() != Some(owner) {
+            return Ok(false);
         }
         let state = self
             .call(Method::GET, &format!("{path}/state"), None)
@@ -128,7 +139,7 @@ impl Incus {
         if self.exists(&path).await? {
             self.call(Method::DELETE, &path, None).await?;
         }
-        Ok(())
+        Ok(true)
     }
 
     /// The status of each instance, by name.

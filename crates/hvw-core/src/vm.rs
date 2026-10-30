@@ -5,13 +5,17 @@ use sha2::{Digest, Sha256};
 /// The longest VM name. Incus accepts 63 characters.
 const MAX_LEN: usize = 63;
 
+/// The prefix of all VM names. The member works only on Incus instances
+/// with this prefix, so a client cannot name other instances.
+pub const PREFIX: &str = "hvw-";
+
 /// A name for a VM: it is also an Incus instance name, a systemd instance
 /// name and a path component.
 pub fn valid_vm_name(name: &str) -> bool {
     let b = name.as_bytes();
-    !b.is_empty()
+    name.starts_with(PREFIX)
+        && b.len() > PREFIX.len()
         && b.len() <= MAX_LEN
-        && b[0].is_ascii_lowercase()
         && *b.last().unwrap_or(&b'-') != b'-'
         && b.iter()
             .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || *c == b'-')
@@ -53,13 +57,17 @@ mod tests {
     #[test]
     fn valid_names() {
         assert!(valid_vm_name("hvw-feat-x1"));
+        assert!(valid_vm_name("hvw-0a1b2c3d"));
         assert!(!valid_vm_name(""));
-        assert!(!valid_vm_name("1abc"));
-        assert!(!valid_vm_name("abc-"));
-        assert!(!valid_vm_name("a_b"));
-        assert!(!valid_vm_name("Abc"));
-        assert!(!valid_vm_name("a/b"));
-        assert!(!valid_vm_name(&"a".repeat(64)));
+        assert!(!valid_vm_name("hvw-"));
+        assert!(!valid_vm_name("hvw-1abc-"));
+        assert!(!valid_vm_name("hvw-a_b"));
+        assert!(!valid_vm_name("hvw-Abc"));
+        assert!(!valid_vm_name("hvw-a/b"));
+        assert!(!valid_vm_name(&format!("hvw-{}", "a".repeat(60))));
+        // Other Incus instances on the member, which hvw must not touch.
+        assert!(!valid_vm_name("web"));
+        assert!(!valid_vm_name("hvwx-db"));
     }
 
     #[test]

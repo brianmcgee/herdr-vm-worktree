@@ -241,6 +241,32 @@ pkgs.testers.runNixOSTest {
           " && echo uncommitted > notes.txt && git add notes.txt'"
       )
 
+      with subtest("hvw keeps an Incus instance that it did not make"):
+          import hashlib
+
+          # An instance of the member admin with the VM name of a worktree.
+          path = "/home/alice/work/foreign"
+          foreign = "hvw-foreign-" + hashlib.sha256(path.encode()).hexdigest()[:8]
+          member.succeed(
+              f"incus create --empty --vm -s ${nodes.member.services.hvw.member.storagePool} {foreign}"
+          )
+          # The launch fails on the member after the push, and the client
+          # then destroys the VM of this name.
+          client.succeed(
+              "sudo -u alice sh -c '"
+              f"mkdir -p {path} && cd {path} && git init -q -b main"
+              " && git config user.email a@b && git config user.name alice"
+              " && printf \"[[repo]]\\npath = \\\".\\\"\\npolicy = \\\"nope\\\"\\n\" > hvw.toml"
+              " && git add -A && git commit -q -m init'"
+          )
+          out = client.fail(
+              "sudo -u alice env XDG_RUNTIME_DIR=/run/user/1000 HOME=/home/alice"
+              f" sh -c 'cd {path} && hvw launch' 2>&1"
+          )
+          assert "nope" in out, out
+          member.succeed(f"incus info {foreign}")
+          member.succeed(f"incus delete {foreign}")
+
       with subtest("hvw launch starts a VM with the repo"):
           alice("hvw launch", timeout=1800)
           name = json.loads(alice("hvw list --json"))[0]["name"]

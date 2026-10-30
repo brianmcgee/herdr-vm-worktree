@@ -38,6 +38,10 @@ flowchart LR
   no route to the control plane.
 - **Known peers only.** A member accepts only the iroh endpoint ids of
   the clients in its clan service instance.
+- **Only its own Incus instances.** `hvw-agent` accepts only VM names
+  that start with `hvw-`. It tags each VM that it makes with the client
+  in `user.hvw.client`, and it deletes only instances with the tag of
+  that client. Other instances on the member stay.
 - **One gatekeeper per VM.** Each VM has its own iron-proxy process, CA
   and audit log (`journalctl -u iron-proxy@<vm>`). One VM never sees the
   credentials or grants of another VM.

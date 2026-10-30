@@ -20,7 +20,7 @@ use serde_json::json;
 use tokio::sync::{Mutex, broadcast, oneshot};
 
 use crate::config::{Config, env_file};
-use crate::incus::{Exec, Incus};
+use crate::incus::{Exec, Incus, OWNER_KEY};
 use crate::state::{RepoRecord, VmRecord};
 use crate::{attach, broker, farm, gatekeeper, git, state};
 use hvw_core::vm::valid_vm_name;
@@ -417,7 +417,7 @@ async fn launch(
     };
     let r = build(agent, peer, vm, repos, git_user, progress).await;
     if r.is_err()
-        && let Err(e) = remove(agent, vm).await
+        && let Err(e) = remove(agent, vm, &peer.name).await
     {
         tracing::warn!("cannot delete the failed VM {vm}: {e:#}");
     }
@@ -529,6 +529,7 @@ async fn build(
                 "limits.cpu": cfg.vm.cpus.to_string(),
                 "limits.memory": cfg.vm.memory,
                 "security.secureboot": "false",
+                (OWNER_KEY): rec.client,
             },
             "devices": devices,
         }))
@@ -636,11 +637,11 @@ async fn destroy(agent: &Agent, peer: &Peer, vm: &str) -> Result<()> {
     {
         bail!("VM {vm} launches now: destroy it when the launch ends");
     }
-    remove(agent, vm).await
+    remove(agent, vm, &peer.name).await
 }
 
-/// Deletes a VM, its gatekeeper and its files.
-async fn remove(agent: &Agent, vm: &str) -> Result<()> {
+/// Deletes a VM of the client `owner`, its gatekeeper and its files.
+async fn remove(agent: &Agent, vm: &str, owner: &str) -> Result<()> {
     let cfg = &agent.cfg;
     let ids: Vec<u64> = agent
         .pending
@@ -654,7 +655,9 @@ async fn remove(agent: &Agent, vm: &str) -> Result<()> {
         agent.withdraw(id).await;
     }
     let _lock = agent.lock.lock().await;
-    agent.incus.delete_instance(vm).await?;
+    if !agent.incus.delete_instance(vm, owner).await? {
+        tracing::warn!("the Incus instance {vm} is not a VM of {owner}: it stays");
+    }
     gatekeeper::stop(vm).await?;
     agent.incus.delete_acl(&gatekeeper::acl_name(vm)).await?;
     farm::release(cfg, vm).await?;
