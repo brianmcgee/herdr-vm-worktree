@@ -64,6 +64,11 @@ nix build .#checks.x86_64-linux.e2e               # full round trip
 level of nesting. On a host without it, they fail with a clear message.
 In `e2e`, the `hvw launch` step alone takes about 4 minutes.
 
+The Rust dependencies have their own derivation. It changes only with
+`Cargo.toml` or `Cargo.lock`. The VM image holds only `egress-request`,
+from its own package, so a change of another crate does not build the
+image again.
+
 ## Conventions
 
 - TDD: each behaviour starts with a failing test. Tests use real

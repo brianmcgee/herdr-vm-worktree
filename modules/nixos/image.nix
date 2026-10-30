@@ -13,10 +13,7 @@ let
 
   # Only `egress-request` of the workspace goes into the VM. The other
   # programs hold member and client code that the VM does not need.
-  egressRequest = pkgs.runCommand "egress-request" { } ''
-    install -D ${flake.packages.${pkgs.stdenv.hostPlatform.system}.hvw}/bin/egress-request \
-      $out/bin/egress-request
-  '';
+  egressRequest = flake.packages.${pkgs.stdenv.hostPlatform.system}.egress-request;
 
   # `hvw-agent` runs this once after the boot, with the repo names as
   # arguments. It needs /run/hvw/ca.crt and the farm disks of the repos.
