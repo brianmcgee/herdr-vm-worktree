@@ -21,6 +21,8 @@ pkgs.rustPlatform.buildRustPackage {
   cargoLock.lockFile = root + "/Cargo.lock";
 
   cargoTestFlags = [ "--workspace" ];
+  # The git tests of the client and the member run real git.
+  nativeCheckInputs = [ pkgs.git ];
 
   passthru.tests.clippy = pkgs.rustPlatform.buildRustPackage {
     pname = "hvw-clippy";
