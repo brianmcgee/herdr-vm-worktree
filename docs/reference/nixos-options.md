@@ -10,6 +10,7 @@
 | `nixosModules.relay` | `services.hvw.relay` |
 | `nixosModules.image` | `hvw.image`, the base image of the VMs |
 | `packages.<system>.hvw` | `hvw`, `hvw-watch`, `hvw-review`, `hvw-agent`, `egress-request` |
+| `packages.<system>.default` | The same as `hvw`. `nix run` opens the terminal UI. |
 | `packages.<system>.hvw-image` | The default base image |
 | `packages.<system>.herdr-plugin` | The herdr plugin |
 | `packages.<system>.iron-proxy` | The gatekeeper |
