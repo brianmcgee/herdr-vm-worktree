@@ -74,7 +74,7 @@ gets the VMs again every 5 seconds.
 | `a` | VMs | Runs `hvw attach` on the terminal. The UI comes back when the session ends. |
 | `p`, `f` | VMs | Runs `hvw push` or `hvw fetch` for the worktree of the VM and shows the output. |
 | `ctrl-d` | VMs | Destroys the VM, after `y`. |
-| `v`, `p`, `d` | pending | Allows the request for the VM, allows it for the policies, or denies it. |
+| `v`, `p`, `d` | pending | Allows the request for the VM; allows it for the VM and shows the Nix change for its policies; or denies it. |
 
 Attach, push, fetch and destroy need the local entry of the VM, as the
 commands do. A VM of the same name on another member has no local entry.

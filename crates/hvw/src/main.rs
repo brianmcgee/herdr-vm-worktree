@@ -163,8 +163,8 @@ struct Place {
 enum Scope {
     /// Allow for this VM only.
     Vm,
-    /// Allow for this VM and new VMs of its policies, until the next
-    /// deploy. Prints the Nix change for the clan repo.
+    /// Allow for this VM only, and print the Nix change that adds the grant
+    /// to its policies. Commit and deploy it to allow new VMs too.
     Policy,
     Deny,
 }

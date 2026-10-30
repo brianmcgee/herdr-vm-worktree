@@ -7,7 +7,7 @@ use std::time::Duration;
 use anyhow::{Context, Result, bail};
 use bytes::Bytes;
 use http_body_util::{BodyExt, Full};
-use hvw_core::policy::{DEFAULT_DENY_CIDRS, Effective, Gatekeeper, Grant, Policy};
+use hvw_core::policy::{DEFAULT_DENY_CIDRS, Effective, Gatekeeper, Policy};
 use hyper::Request;
 use hyper_util::rt::TokioIo;
 use serde_json::json;
@@ -32,30 +32,8 @@ pub fn acl_name(vm: &str) -> String {
     format!("hvw-{vm}")
 }
 
-/// The grants of the user with scope policy, that wait for the next deploy.
-pub fn policy_grants(cfg: &Config, policy: &str) -> Result<Vec<Grant>> {
-    let path = cfg.pending_grants_dir().join(format!("{policy}.json"));
-    match std::fs::read_to_string(&path) {
-        Ok(t) => Ok(serde_json::from_str(&t)?),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(vec![]),
-        Err(e) => Err(e.into()),
-    }
-}
-
-pub fn add_policy_grant(cfg: &Config, policy: &str, grant: &Grant) -> Result<()> {
-    let mut grants = policy_grants(cfg, policy)?;
-    if !grants.contains(grant) {
-        grants.push(grant.clone());
-    }
-    std::fs::create_dir_all(cfg.pending_grants_dir())?;
-    write_atomic(
-        &cfg.pending_grants_dir().join(format!("{policy}.json")),
-        &serde_json::to_vec_pretty(&grants)?,
-    )
-}
-
-/// The policies of a VM, merged, with the pending policy grants and the
-/// VM grants.
+/// The policies of a VM, merged, with the grants of the VM. A grant of the
+/// user lives as long as its VM. Only a policy in Nix lasts longer.
 pub fn effective(cfg: &Config, rec: &VmRecord) -> Result<Effective> {
     let policies: Vec<Policy> = rec
         .policies()
@@ -63,11 +41,6 @@ pub fn effective(cfg: &Config, rec: &VmRecord) -> Result<Effective> {
         .map(|p| cfg.policy(p))
         .collect::<Result<_>>()?;
     let mut eff = Effective::merge(&policies)?;
-    for p in rec.policies() {
-        for g in policy_grants(cfg, &p)? {
-            eff.grant(&g);
-        }
-    }
     for g in &rec.grants {
         eff.grant(g);
     }
@@ -261,4 +234,57 @@ pub async fn recent_log(vm: &str, minutes: u32) -> Result<Vec<String>> {
         .lines()
         .map(str::to_owned)
         .collect())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::state::RepoRecord;
+    use hvw_core::policy::Grant;
+
+    fn record(name: &str, grants: Vec<Grant>) -> VmRecord {
+        VmRecord {
+            name: name.into(),
+            client: "laptop".into(),
+            slot: 0,
+            repos: vec![RepoRecord {
+                name: "repo".into(),
+                policy: "web".into(),
+                commit: "0123456789abcdef0123456789abcdef01234567".into(),
+                stash: None,
+                branch: Some("main".into()),
+            }],
+            launched: true,
+            grants,
+            farms: vec![],
+        }
+    }
+
+    #[test]
+    fn a_grant_stays_in_its_vm() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut cfg = crate::config::tests::cfg(24);
+        cfg.policies_dir = dir.path().join("policies");
+        cfg.state_dir = dir.path().join("state");
+        std::fs::create_dir_all(&cfg.policies_dir).unwrap();
+        std::fs::write(
+            cfg.policies_dir.join("web.json"),
+            r#"{"domains": ["github.com"]}"#,
+        )
+        .unwrap();
+        // An older agent kept policy grants here, for all VMs of a policy.
+        let old = cfg.state_dir.join("policy-grants");
+        std::fs::create_dir_all(&old).unwrap();
+        std::fs::write(old.join("web.json"), r#"[{"host": "api.example.com"}]"#).unwrap();
+
+        let grant = Grant {
+            host: "api.example.com".into(),
+            methods: vec![],
+            paths: vec![],
+        };
+        let a = effective(&cfg, &record("hvw-repo-1a2b3c4d", vec![grant])).unwrap();
+        let b = effective(&cfg, &record("hvw-repo-5e6f7a8b", vec![])).unwrap();
+        assert!(a.domains.contains("api.example.com"));
+        assert_eq!(b.domains, ["github.com".to_owned()].into());
+    }
 }

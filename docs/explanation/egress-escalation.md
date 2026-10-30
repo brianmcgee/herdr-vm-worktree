@@ -39,18 +39,22 @@ A request names a host, a method and a path. It never names a secret.
 flowchart TD
   R[pending request] --> D{your decision}
   D -->|vm| V[grant in vm.json of this VM]
-  D -->|policy| P[grant in vm.json + pending policy file]
+  D -->|policy| P[grant in vm.json of this VM + Nix change]
   D -->|deny| X[egress-request exits 1]
   V --> E[goes away with the VM]
-  P --> N[new VMs of the policy get it until the next deploy]
-  N --> Nix[hvw prints the Nix change: commit and deploy it]
+  P --> E
+  P --> Nix[commit and deploy the Nix change: new VMs of the policy get it]
 ```
 
-- **vm**: the grant lives in the record of the VM. It goes away when the
-  VM goes away.
-- **policy**: new VMs of the same policies also get the grant, until the
-  next deploy. To keep it, put the Nix change that `hvw` prints into the
-  clan repo.
+A grant of a decision lives in the record of the VM. It goes away when
+the VM goes away. Only a policy in Nix lasts longer, so each lasting
+change is in the clan repo, and goes through review and a deploy.
+
+- **vm**: allow for this VM.
+- **policy**: allow for this VM, and `hvw` prints the Nix change that
+  adds the grant to the policies of the VM. Other VMs of the policy get
+  the grant only after you commit the change to the clan repo and deploy
+  it.
 - **deny**: `egress-request` exits with status 1. The agent must not try
   again.
 

@@ -87,7 +87,7 @@ fn draw_header(f: &mut Frame, app: &App, area: Rect) {
 
     let view_hints = match app.view {
         View::Vms => "<a> attach  <enter> describe  <p> push  <f> fetch  <ctrl-d> destroy",
-        View::Pending => "<v> allow VM  <p> allow policies  <d> deny",
+        View::Pending => "<v> allow VM  <p> allow VM + Nix change  <d> deny",
         View::Members => "",
     };
     let hint_text = vec![

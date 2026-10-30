@@ -121,11 +121,6 @@ impl Config {
     pub fn farms_dir(&self) -> PathBuf {
         self.state_dir.join("farms")
     }
-
-    /// Policy grants that wait for the next deploy, by policy name.
-    pub fn pending_grants_dir(&self) -> PathBuf {
-        self.state_dir.join("policy-grants")
-    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -151,10 +146,10 @@ pub fn env_file(vars: &BTreeMap<String, String>) -> String {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
 
-    fn cfg(prefix: u8) -> Config {
+    pub(crate) fn cfg(prefix: u8) -> Config {
         Config {
             name: "m1".into(),
             link: "/l".into(),

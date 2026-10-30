@@ -174,9 +174,9 @@ pub fn grant_of(ask: &EgressAsk) -> hvw_core::policy::Grant {
     }
 }
 
-/// Applies an approved request to the VM and, with scope policy, to the
-/// pending grants of its policies. Returns the Nix change for a policy
-/// grant.
+/// Applies an approved request to the VM. The grant lives as long as the
+/// VM. With scope policy, also returns the Nix change that adds the grant
+/// to the policies of the VM, for the clan repo.
 pub async fn apply(
     agent: &Agent,
     p: &Pending,
@@ -193,18 +193,12 @@ pub async fn apply(
     if !rec.grants.contains(&grant) {
         rec.grants.push(grant.clone());
     }
-    let mut nix = None;
-    if decision == Decision::Policy {
-        let mut text = String::new();
-        for policy in rec.policies() {
-            gatekeeper::add_policy_grant(&agent.cfg, &policy, &grant)?;
-            text.push_str(&hvw_core::policy::grants_as_nix(
-                &policy,
-                std::slice::from_ref(&grant),
-            ));
-        }
-        nix = Some(text);
-    }
+    let nix = (decision == Decision::Policy).then(|| {
+        rec.policies()
+            .iter()
+            .map(|policy| hvw_core::policy::grants_as_nix(policy, std::slice::from_ref(&grant)))
+            .collect::<String>()
+    });
     state::save(&agent.cfg, &rec)?;
     gatekeeper::reload(&agent.cfg, &rec).await?;
     Ok(nix)

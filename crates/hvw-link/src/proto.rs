@@ -139,8 +139,9 @@ pub struct FetchInfo {
 pub enum Decision {
     /// Allow for this VM only. The grant goes away with the VM.
     Vm,
-    /// Allow for this VM and for new VMs of its policies, until the next
-    /// deploy. The member returns the Nix change for the clan repo.
+    /// Allow for this VM, as `Vm` does. The member also returns the Nix
+    /// change that adds the grant to the policies of the VM, for the clan
+    /// repo. Other VMs get the grant only after a deploy of that change.
     Policy,
     Deny,
 }

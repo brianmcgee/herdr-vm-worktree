@@ -83,6 +83,12 @@ impl Agent {
 
 pub async fn run(cfg: Config) -> Result<()> {
     farm::check_layout(&cfg).await?;
+    // An older agent kept the policy grants of the user here and gave them
+    // to each new VM of the policy. A grant now lives in its VM only.
+    match std::fs::remove_dir_all(cfg.state_dir.join("policy-grants")) {
+        Err(e) if e.kind() != std::io::ErrorKind::NotFound => return Err(e.into()),
+        _ => {}
+    }
     let link_cfg = hvw_link::Config::load(&cfg.link)?;
     let link = Link::bind(&link_cfg).await?;
     tracing::info!(id = %link.id(), "hvw-agent {} is up", cfg.name);
