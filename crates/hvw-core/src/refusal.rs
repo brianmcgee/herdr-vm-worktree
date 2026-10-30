@@ -75,11 +75,20 @@ struct Audit {
 }
 
 /// Parses one log line of iron-proxy. Returns a refusal of the allowlist,
-/// or `None` for any other line.
+/// or `None` for any other line. The VM chooses the host, the method and
+/// the path, and the user reads them. A refusal with a control character
+/// in one of them is not valid, so it cannot change the terminal of the
+/// user.
 pub fn parse(line: &str) -> Option<Refusal> {
     let l: Line = serde_json::from_str(line).ok()?;
     let a = l.audit?;
     if l.msg != "request" || a.action != "reject" || l.rejected_by.as_deref() != Some("allowlist") {
+        return None;
+    }
+    if [&a.host, &a.method, &a.path]
+        .iter()
+        .any(|s| s.chars().any(char::is_control))
+    {
         return None;
     }
     Some(Refusal {
@@ -211,6 +220,23 @@ mod tests {
         assert_eq!(parse(CONNECT).unwrap().host, "other.test");
         for line in NOISE {
             assert_eq!(parse(line), None, "{line}");
+        }
+    }
+
+    #[test]
+    fn refusals_with_control_characters_are_ignored() {
+        // The VM picks the path, and iron-proxy logs it decoded. A control
+        // character can rewrite the line that the user reads.
+        for (from, to) in [
+            ("/foo/bar", r"/\u001b[2K\rGET good.test /"),
+            ("/foo/bar", r"/a\u0000b"),
+            ("/foo/bar", r"/a\u009bb"),
+            (r#""host":"denied.test""#, r#""host":"denied.test\nx""#),
+            (r#""method":"GET""#, r#""method":"G\tET""#),
+        ] {
+            let line = GET.replace(from, to);
+            assert_ne!(line, GET);
+            assert_eq!(parse(&line), None, "{line}");
         }
     }
 
