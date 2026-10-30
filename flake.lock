@@ -51,6 +51,21 @@
         "type": "github"
       }
     },
+    "crane": {
+      "locked": {
+        "lastModified": 1792350552,
+        "narHash": "sha256-292lvpvxTGKryKxh3/3tcIVi85CwYGdl4oOi113Sob8=",
+        "owner": "ipetkov",
+        "repo": "crane",
+        "rev": "e675a36b7377bebe41d548388a2501cbb16d380d",
+        "type": "github"
+      },
+      "original": {
+        "owner": "ipetkov",
+        "repo": "crane",
+        "type": "github"
+      }
+    },
     "data-mesher": {
       "inputs": {
         "flake-parts": [
@@ -174,6 +189,7 @@
       "inputs": {
         "blueprint": "blueprint",
         "clan-core": "clan-core",
+        "crane": "crane",
         "nixpkgs": "nixpkgs",
         "treefmt-nix": "treefmt-nix"
       }

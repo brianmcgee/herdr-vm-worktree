@@ -5,6 +5,9 @@
     nixpkgs.url = "github:NixOS/nixpkgs?ref=nixos-unstable";
     blueprint.url = "github:numtide/blueprint";
     blueprint.inputs.nixpkgs.follows = "nixpkgs";
+    # crane builds the Rust dependencies in their own derivation, so that a
+    # change of the code does not compile them again.
+    crane.url = "github:ipetkov/crane";
     treefmt-nix.url = "github:numtide/treefmt-nix";
     treefmt-nix.inputs.nixpkgs.follows = "nixpkgs";
     # Only the checks use clan-core: they evaluate the clan service in a

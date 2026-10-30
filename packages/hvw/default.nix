@@ -1,46 +1,47 @@
 # The Rust workspace: hvw, hvw-agent, hvw-watch, hvw-review,
 # egress-request and their libraries.
-{ pkgs, flake, ... }:
+#
+# The package does not run the tests: `passthru.tests` runs them as checks.
+# Then a change of the code compiles the workspace one time for the
+# package, and the VM tests do not wait for the cargo tests.
+{
+  pkgs,
+  inputs,
+  ...
+}:
 let
-  inherit (pkgs) lib;
-  root = ../..;
+  inherit (import ./crane.nix { inherit pkgs inputs; }) craneLib common cargoArtifacts;
 in
-pkgs.rustPlatform.buildRustPackage {
-  pname = "hvw";
-  version = (lib.importTOML (root + "/Cargo.toml")).workspace.package.version;
-
-  src = lib.fileset.toSource {
-    inherit root;
-    fileset = lib.fileset.unions [
-      (root + "/Cargo.toml")
-      (root + "/Cargo.lock")
-      (root + "/crates")
-    ];
-  };
-
-  cargoLock.lockFile = root + "/Cargo.lock";
-
-  cargoTestFlags = [ "--workspace" ];
-  # The git tests of the client and the member run real git.
-  nativeCheckInputs = [ pkgs.git ];
-
-  passthru.tests.clippy = pkgs.rustPlatform.buildRustPackage {
-    pname = "hvw-clippy";
-    version = "0";
-    inherit (flake.packages.${pkgs.stdenv.hostPlatform.system}.hvw) src cargoDeps;
-    nativeBuildInputs = [ pkgs.clippy ];
-    buildPhase = ''
-      runHook preBuild
-      cargo clippy --workspace --all-targets --offline -- --deny warnings
-      runHook postBuild
-    '';
+craneLib.buildPackage (
+  common
+  // {
+    inherit cargoArtifacts;
+    cargoExtraArgs = "--locked --workspace";
     doCheck = false;
-    installPhase = "touch $out";
-  };
 
-  meta = {
-    description = "herdr worktrees in short-lived Incus VMs behind an egress gatekeeper";
-    license = lib.licenses.mit;
-    mainProgram = "hvw";
-  };
-}
+    passthru.tests = {
+      test = craneLib.cargoTest (
+        common
+        // {
+          inherit cargoArtifacts;
+          cargoTestExtraArgs = "--workspace";
+          # The git tests of the client and the member run real git.
+          nativeBuildInputs = [ pkgs.git ];
+        }
+      );
+      clippy = craneLib.cargoClippy (
+        common
+        // {
+          inherit cargoArtifacts;
+          cargoClippyExtraArgs = "--workspace --all-targets -- --deny warnings";
+        }
+      );
+    };
+
+    meta = {
+      description = "herdr worktrees in short-lived Incus VMs behind an egress gatekeeper";
+      license = pkgs.lib.licenses.mit;
+      mainProgram = "hvw";
+    };
+  }
+)

@@ -46,7 +46,8 @@ nix fmt
 ## Nix checks
 
 ```sh
-nix build .#checks.x86_64-linux.pkgs-hvw          # build and unit tests
+nix build .#checks.x86_64-linux.pkgs-hvw          # build
+nix build .#checks.x86_64-linux.pkgs-hvw-test     # unit tests
 nix build .#checks.x86_64-linux.pkgs-hvw-clippy
 nix build .#checks.x86_64-linux.clan              # evaluates the clan service
 nix build .#checks.x86_64-linux.incus-vm          # one member boots a VM
