@@ -82,3 +82,7 @@ flowchart LR
 - The ACL allows TCP to two ports only. It blocks all other protocols.
 - Credentials change only through Nix and a deploy, never at runtime.
 - Do not give the VM a binary cache that it can read in full.
+- A git bundle in each direction holds at most 4 GiB. `hvw fetch` checks
+  the objects of the VM with `git fsck`.
+- A client has at most 8 VMs that did not launch yet. A VM has at most
+  8 egress requests that wait for a decision.
