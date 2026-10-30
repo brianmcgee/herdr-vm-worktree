@@ -52,14 +52,27 @@ pub fn flake_ref(cfg: &Config, vm: &str, repo: &str, rev: &str) -> String {
     )
 }
 
+/// The profile of the devshell of one repo of a VM, under `gcroots`. Each
+/// VM has its own directory, so the roots of two VMs never mix.
+fn profile(gcroots: &Path, vm: &str, repo: &str) -> PathBuf {
+    gcroots.join(vm).join(repo)
+}
+
+/// Deletes the GC roots of a VM.
+fn drop_gcroots(gcroots: &Path, vm: &str) -> Result<()> {
+    match std::fs::remove_dir_all(gcroots.join(vm)) {
+        Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(e.into()),
+        _ => Ok(()),
+    }
+}
+
 /// Builds the farm of one repo and snapshots it for the VM. Returns the
 /// farm key.
 pub async fn prepare(cfg: &Config, rec: &VmRecord, repo: &str, flake: &str) -> Result<String> {
-    let gcroots = cfg.state_dir.join("gcroots");
-    std::fs::create_dir_all(&gcroots)?;
     // The profile is a GC root: the host GC keeps the closure while the
     // VM lives. The farm itself has its own inodes and needs no root.
-    let profile = gcroots.join(format!("{}-{repo}", rec.name));
+    let profile = profile(&cfg.state_dir.join("gcroots"), &rec.name, repo);
+    std::fs::create_dir_all(profile.parent().context("a profile has a parent")?)?;
     // The rc script of the devshell. The login shell of the VM sources it.
     let rc = output(Command::new("nix").args([
         "--extra-experimental-features",
@@ -173,17 +186,7 @@ pub async fn release(cfg: &Config, vm: &str) -> Result<()> {
             delete_subvolume(&e?.path()).await?;
         }
     }
-    let gcroots = cfg.state_dir.join("gcroots");
-    if let Ok(entries) = std::fs::read_dir(&gcroots) {
-        for e in entries {
-            let e = e?;
-            let name = e.file_name().to_string_lossy().into_owned();
-            if name.starts_with(&format!("{vm}-")) {
-                std::fs::remove_file(e.path())?;
-            }
-        }
-    }
-    Ok(())
+    drop_gcroots(&cfg.state_dir.join("gcroots"), vm)
 }
 
 /// Fails unless the store and the state directory are on one btrfs
@@ -230,4 +233,34 @@ pub async fn collect_garbage(cfg: &Config, in_use: &BTreeSet<String>) -> Result<
         deleted.push(key.to_owned());
     }
     Ok(deleted)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn release_keeps_the_roots_of_other_vms() {
+        let tmp = tempfile::tempdir().unwrap();
+        let gcroots = tmp.path();
+        // `nix print-dev-env --profile P` makes P and P-1-link.
+        let roots = [
+            profile(gcroots, "hvw-a", "b-c"),
+            profile(gcroots, "hvw-a-b", "c"),
+        ];
+        assert_ne!(roots[0], roots[1]);
+        for p in &roots {
+            std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+            std::os::unix::fs::symlink("/nix/store/x-env", p).unwrap();
+            std::os::unix::fs::symlink("/nix/store/x-env", format!("{}-1-link", p.display()))
+                .unwrap();
+        }
+        drop_gcroots(gcroots, "hvw-a").unwrap();
+        assert!(!roots[0].is_symlink());
+        assert!(roots[1].is_symlink());
+        drop_gcroots(gcroots, "hvw-a-b").unwrap();
+        assert_eq!(std::fs::read_dir(gcroots).unwrap().count(), 0);
+        // A VM without roots.
+        drop_gcroots(gcroots, "hvw-x").unwrap();
+    }
 }
