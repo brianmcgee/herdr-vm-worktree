@@ -193,7 +193,7 @@ async fn main() -> ExitCode {
     match r {
         Ok(code) => code,
         Err(e) => {
-            eprintln!("hvw: {e:#}");
+            eprintln!("hvw: {}", view::printable(&format!("{e:#}")));
             ExitCode::FAILURE
         }
     }
@@ -320,8 +320,9 @@ fn vm_entry(store: &Store, t: &VmTarget) -> Result<VmEntry> {
     }
 }
 
+/// Prints a progress line. The text can come from a member or a VM.
 fn say(line: &str) {
-    eprintln!("hvw: {line}");
+    eprintln!("hvw: {}", view::one_line(line));
 }
 
 /// The Incus status of a VM, or `None` when its member does not answer.
@@ -452,8 +453,10 @@ async fn fetch(entry: &VmEntry, manifest: &Manifest) -> Result<()> {
         hvw::git::fetch_bundle(path, &entry.vm, &bundle).await?;
         match info.head {
             Some(h) => println!(
-                "{}: fetched the branches as refs/remotes/{}/*; the VM is on {h}",
-                repo.name, entry.vm
+                "{}: fetched the branches as refs/remotes/{}/*; the VM is on {}",
+                repo.name,
+                entry.vm,
+                view::one_line(&h)
             ),
             None => println!(
                 "{}: fetched the branches as refs/remotes/{}/*",
@@ -542,7 +545,7 @@ async fn decide(store: &Store, id: u64, decision: Decision, member: Option<Strin
     let r: DecideResult =
         decode(local::call(&member, &Request::Decide { id, decision }, None, say).await?)?;
     if let Some(nix) = r.nix {
-        println!("{nix}");
+        println!("{}", view::printable(&nix));
     }
     Ok(())
 }
