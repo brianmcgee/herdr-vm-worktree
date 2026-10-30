@@ -130,8 +130,9 @@ in
       default = { };
       example = lib.literalExpression "{ github = config.clan.core.vars.generators.github.files.token.path; }";
       description = ''
-        Credential files by name. Each gatekeeper loads them as systemd
-        credentials. The `credential` field of a policy secret names one.
+        Credential files by name. The `credential` field of a policy secret
+        names one. The gatekeeper of a VM loads as systemd credentials only
+        the ones that the secrets of its policies name.
       '';
     };
 
@@ -196,6 +197,7 @@ in
         broker_port = cfg.brokerPort;
         gatekeeper_port_base = cfg.gatekeeperPortBase;
         farm_retention_days = cfg.farmRetentionDays;
+        credentials = lib.mapAttrs (_: f: "${f}") cfg.credentials;
         vm = {
           inherit (cfg.vm) cpus memory harness;
           user = "agent";
@@ -301,10 +303,9 @@ in
         };
       };
 
-      users.users.hvw-gatekeeper = {
-        isSystemUser = true;
-        group = "hvw-gatekeeper";
-      };
+      # The group of all gatekeepers. Each gatekeeper has its own dynamic
+      # user, so that it cannot read the credentials or the memory of
+      # another gatekeeper.
       users.groups.hvw-gatekeeper = { };
 
       systemd.tmpfiles.settings."10-hvw".${stateDir}.d.mode = "0700";
@@ -358,14 +359,16 @@ in
       };
 
       # One gatekeeper per VM. `hvw-agent` writes its files and starts it.
+      # A runtime drop-in of hvw-agent loads the credentials that the
+      # secrets of the VM name, and no other.
       systemd.services."iron-proxy@" = {
         description = "Egress gatekeeper of the worktree VM %i";
         serviceConfig = {
-          User = "hvw-gatekeeper";
+          DynamicUser = true;
           Group = "hvw-gatekeeper";
           ExecStart = "${lib.getExe cfg.ironProxy} -config ${stateDir}/vms/%i/gatekeeper/config.json";
           EnvironmentFile = "${stateDir}/vms/%i/gatekeeper/env";
-          LoadCredential = lib.mapAttrsToList (n: f: "${n}:${f}") cfg.credentials;
+          ProtectProc = "invisible";
           Restart = "on-failure";
           # The gatekeeper reads its files in the state directory of
           # hvw-agent. It needs no other file and no privilege.

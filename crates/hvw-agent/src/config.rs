@@ -29,6 +29,10 @@ pub struct Config {
     pub vm: VmConfig,
     /// Farms that no VM used for this many days are deleted.
     pub farm_retention_days: u64,
+    /// The credential files of the member, by name. The gatekeeper of a VM
+    /// loads only the ones that the secrets of its policies name.
+    #[serde(default)]
+    pub credentials: BTreeMap<String, PathBuf>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -174,6 +178,7 @@ pub(crate) mod tests {
                 harness: vec!["bash".into()],
             },
             farm_retention_days: 14,
+            credentials: BTreeMap::new(),
         }
     }
 

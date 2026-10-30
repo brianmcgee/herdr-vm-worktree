@@ -117,6 +117,8 @@ pkgs.testers.runNixOSTest {
           ];
         };
         credentials.web = pkgs.writeText "web-credential" secret;
+        # No policy names it: no gatekeeper may load it.
+        credentials.other = pkgs.writeText "other-credential" "other-secret";
         policies.web = {
           domains = [ "api.example.test" ];
           secrets = [
@@ -319,6 +321,14 @@ pkgs.testers.runNixOSTest {
           wait_for_vm_ipv4(member, name, "10.250.0.")
           out = agent(name, "curl -sf -H \"Authorization: Bearer $WEB_TOKEN\" https://api.example.test/x")
           assert json.loads(out)["auth"] == "Bearer ${secret}", out
+
+      with subtest("the gatekeeper holds only the credentials of its VM, as its own user"):
+          unit = f"iron-proxy@{name}.service"
+          pid = member.succeed(f"systemctl show -P MainPID {unit}").strip()
+          creds = member.succeed(f"nsenter -t {pid} -m ls /run/credentials/{unit}").split()
+          assert creds == ["web"], creds
+          uid = int(member.succeed(f"systemctl show -P UID {unit}").strip())
+          assert 61184 <= uid <= 65519, uid
 
       with subtest("a member process outside hvw-agent cannot use a gatekeeper"):
           gk = json.loads(member.succeed(f"cat /var/lib/hvw/vms/{name}/gatekeeper/config.json"))

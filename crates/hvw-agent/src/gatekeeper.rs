@@ -1,7 +1,8 @@
 //! The gatekeeper of a VM: an `iron-proxy@<vm>` unit with its own CA,
 //! configuration and Incus network ACL.
 
-use std::path::PathBuf;
+use std::collections::BTreeSet;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
@@ -18,8 +19,11 @@ use crate::config::Config;
 use crate::incus::Incus;
 use crate::state::{VmRecord, write_atomic};
 
-/// The user of the `iron-proxy@` units.
-pub const USER: &str = "hvw-gatekeeper";
+/// The static group of the `iron-proxy@` units. Each unit has its own
+/// dynamic user.
+pub const GROUP: &str = "hvw-gatekeeper";
+/// The directory of the runtime drop-ins of systemd units.
+const UNIT_DIR: &str = "/run/systemd/system";
 const KEY_ENV: &str = "IRON_MANAGEMENT_API_KEY";
 /// How long the CA of a VM is valid. A VM lives shorter than this.
 const CA_HOURS: u32 = 24 * 14;
@@ -117,9 +121,10 @@ pub async fn prepare(cfg: &Config, incus: &Incus, rec: &VmRecord) -> Result<()> 
         )?;
     }
     write_config(cfg, rec)?;
-    run(Command::new("chown").args(["-R", &format!("{USER}:{USER}"), &d.to_string_lossy()]))
-        .await?;
-    run(Command::new("chmod").args(["-R", "go-rwx", &d.to_string_lossy()])).await?;
+    // Each gatekeeper runs as its own dynamic user in the static group. Its
+    // mount namespace shows it only its own directory.
+    run(Command::new("chown").args(["-R", &format!("root:{GROUP}"), &d.to_string_lossy()])).await?;
+    run(Command::new("chmod").args(["-R", "u=rwX,g=rX,o=", &d.to_string_lossy()])).await?;
 
     let ports = cfg.ports(rec.slot);
     incus
@@ -153,11 +158,44 @@ fn write_config(cfg: &Config, rec: &VmRecord) -> Result<()> {
     )
 }
 
+fn unit(vm: &str) -> String {
+    format!("iron-proxy@{vm}.service")
+}
+
+fn dropin_dir(vm: &str) -> PathBuf {
+    Path::new(UNIT_DIR).join(format!("{}.d", unit(vm)))
+}
+
+/// The runtime drop-in of the gatekeeper unit of a VM. It loads the
+/// credentials that the secrets of the VM name, and no other.
+fn dropin(cfg: &Config, rec: &VmRecord) -> Result<String> {
+    let eff = effective(cfg, rec)?;
+    let names: BTreeSet<&str> = eff
+        .secrets
+        .values()
+        .map(|s| s.credential.as_str())
+        .collect();
+    let mut out = String::from("[Service]\n");
+    for name in names {
+        let path = cfg
+            .credentials
+            .get(name)
+            .with_context(|| format!("the member has no credential {name:?}"))?;
+        // systemd expands % specifiers in unit files.
+        let path = path.to_string_lossy().replace('%', "%%");
+        out.push_str(&format!("LoadCredential={name}:{path}\n"));
+    }
+    Ok(out)
+}
+
 /// Starts the gatekeeper and waits until its tunnel port accepts
 /// connections.
 pub async fn start(cfg: &Config, rec: &VmRecord) -> Result<()> {
-    run(Command::new("systemctl").args(["start", &format!("iron-proxy@{}.service", rec.name)]))
-        .await?;
+    let d = dropin_dir(&rec.name);
+    std::fs::create_dir_all(&d)?;
+    write_atomic(&d.join("50-hvw.conf"), dropin(cfg, rec)?.as_bytes())?;
+    run(Command::new("systemctl").arg("daemon-reload")).await?;
+    run(Command::new("systemctl").args(["start", &unit(&rec.name)])).await?;
     let addr = (cfg.bridge.address, cfg.ports(rec.slot).tunnel);
     for _ in 0..100 {
         if TcpStream::connect(addr).await.is_ok() {
@@ -178,10 +216,8 @@ pub async fn start(cfg: &Config, rec: &VmRecord) -> Result<()> {
 pub async fn reload(cfg: &Config, rec: &VmRecord) -> Result<()> {
     write_config(cfg, rec)?;
     let d = dir(cfg, &rec.name);
-    run(Command::new("chown")
-        .arg(format!("{USER}:{USER}"))
-        .arg(d.join("config.json")))
-    .await?;
+    run(Command::new("chgrp").arg(GROUP).arg(d.join("config.json"))).await?;
+    run(Command::new("chmod").arg("0640").arg(d.join("config.json"))).await?;
     let env = std::fs::read_to_string(d.join("env"))?;
     let key = env
         .trim()
@@ -206,8 +242,14 @@ pub async fn reload(cfg: &Config, rec: &VmRecord) -> Result<()> {
     Ok(())
 }
 
+/// Stops the gatekeeper and removes its drop-in.
 pub async fn stop(vm: &str) -> Result<()> {
-    run(Command::new("systemctl").args(["stop", &format!("iron-proxy@{vm}.service")])).await
+    run(Command::new("systemctl").args(["stop", &unit(vm)])).await?;
+    match std::fs::remove_dir_all(dropin_dir(vm)) {
+        Err(e) if e.kind() != std::io::ErrorKind::NotFound => return Err(e.into()),
+        _ => {}
+    }
+    run(Command::new("systemctl").arg("daemon-reload")).await
 }
 
 /// The log lines of the gatekeeper of the last `minutes` minutes.
@@ -286,5 +328,32 @@ mod tests {
         let b = effective(&cfg, &record("hvw-repo-5e6f7a8b", vec![])).unwrap();
         assert!(a.domains.contains("api.example.com"));
         assert_eq!(b.domains, ["github.com".to_owned()].into());
+    }
+
+    #[test]
+    fn a_gatekeeper_loads_only_the_credentials_of_its_vm() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut cfg = crate::config::tests::cfg(24);
+        cfg.policies_dir = dir.path().join("policies");
+        cfg.state_dir = dir.path().join("state");
+        cfg.credentials = [
+            ("github".to_owned(), "/run/secrets/github-token".into()),
+            ("openai".to_owned(), "/run/secrets/openai-key".into()),
+        ]
+        .into();
+        std::fs::create_dir_all(&cfg.policies_dir).unwrap();
+        std::fs::write(
+            cfg.policies_dir.join("web.json"),
+            r#"{"domains": ["api.github.com"], "secrets": [{
+                "credential": "github", "placeholder": "gh-placeholder",
+                "hosts": ["api.github.com"]
+            }]}"#,
+        )
+        .unwrap();
+        let conf = dropin(&cfg, &record("hvw-repo-1a2b3c4d", vec![])).unwrap();
+        assert_eq!(
+            conf,
+            "[Service]\nLoadCredential=github:/run/secrets/github-token\n"
+        );
     }
 }

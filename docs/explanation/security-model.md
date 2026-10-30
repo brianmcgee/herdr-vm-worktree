@@ -45,6 +45,10 @@ flowchart LR
 - **One gatekeeper per VM.** Each VM has its own iron-proxy process, CA
   and audit log (`journalctl -u iron-proxy@<vm>`). One VM never sees the
   credentials or grants of another VM.
+- **Each gatekeeper holds only the credentials of its VM.** A runtime
+  drop-in of `hvw-agent` loads only the credentials that the secrets of
+  the VM name. Each gatekeeper runs as its own dynamic user, so it
+  cannot read the credentials or the memory of another gatekeeper.
 - **Only root on the member reaches a gatekeeper.** An nftables rule
   resets each new local connection to a gatekeeper port from a user
   that is not root. Other users and the `nixbld` fetchers of the
