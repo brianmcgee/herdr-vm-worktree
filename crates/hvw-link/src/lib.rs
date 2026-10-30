@@ -11,10 +11,12 @@ pub use config::{Config, Peer, Peers, Relay};
 pub use proto::*;
 
 use std::path::Path;
+use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
 use iroh::endpoint::{Connection, presets};
 use iroh::{Endpoint, EndpointAddr, RelayMode, RelayUrl, SecretKey, TransportAddr};
+use tokio::task::JoinSet;
 
 /// The ALPN of the protocol. A change that breaks old peers needs a new
 /// ALPN.
@@ -40,7 +42,14 @@ pub fn generate_secret_key() -> (String, String) {
 pub struct Link {
     endpoint: Endpoint,
     peers: Peers,
+    /// The handshakes that run now.
+    handshakes: tokio::sync::Mutex<JoinSet<Result<Connection, String>>>,
 }
+
+/// The longest time that a handshake can take.
+const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
+/// The most handshakes that run at one time. The member refuses more.
+const MAX_HANDSHAKES: usize = 64;
 
 impl Link {
     pub async fn bind(cfg: &Config) -> Result<Self> {
@@ -73,7 +82,11 @@ impl Link {
             .bind()
             .await
             .context("cannot bind the iroh endpoint")?;
-        Ok(Self { endpoint, peers })
+        Ok(Self {
+            endpoint,
+            peers,
+            handshakes: tokio::sync::Mutex::new(JoinSet::new()),
+        })
     }
 
     pub fn id(&self) -> String {
@@ -86,30 +99,54 @@ impl Link {
 
     /// Waits for the next connection from a known peer. Connections from
     /// unknown peers are closed and logged. Returns `None` when the
-    /// endpoint is closed.
+    /// endpoint is closed. Handshakes run in parallel and have a time
+    /// limit, so a slow or silent peer cannot keep the others out.
     pub async fn accept(&self) -> Option<(Peer, Connection)> {
+        let mut handshakes = self.handshakes.lock().await;
         loop {
-            let incoming = self.endpoint.accept().await?;
-            let accepting = match incoming.accept() {
-                Ok(a) => a,
-                Err(e) => {
-                    tracing::warn!("cannot accept a connection: {e}");
-                    continue;
+            tokio::select! {
+                incoming = self.endpoint.accept() => {
+                    let incoming = incoming?;
+                    if handshakes.len() >= MAX_HANDSHAKES {
+                        tracing::warn!("too many handshakes: refused a connection");
+                        incoming.refuse();
+                        continue;
+                    }
+                    let accepting = match incoming.accept() {
+                        Ok(a) => a,
+                        Err(e) => {
+                            tracing::warn!("cannot accept a connection: {e}");
+                            continue;
+                        }
+                    };
+                    handshakes.spawn(async move {
+                        match tokio::time::timeout(HANDSHAKE_TIMEOUT, accepting).await {
+                            Ok(Ok(c)) => Ok(c),
+                            Ok(Err(e)) => Err(format!("handshake failed: {e}")),
+                            Err(_) => Err("handshake timed out".to_owned()),
+                        }
+                    });
                 }
-            };
-            let conn = match accepting.await {
-                Ok(c) => c,
-                Err(e) => {
-                    tracing::warn!("handshake failed: {e}");
-                    continue;
-                }
-            };
-            let id = conn.remote_id();
-            match self.peers.by_id(&id.to_string()) {
-                Some(peer) => return Some((peer.clone(), conn)),
-                None => {
-                    tracing::warn!(peer = %id, "refused a connection from an unknown peer");
-                    conn.close(1u8.into(), b"unknown peer");
+                Some(done) = handshakes.join_next(), if !handshakes.is_empty() => {
+                    let conn = match done {
+                        Ok(Ok(c)) => c,
+                        Ok(Err(e)) => {
+                            tracing::warn!("{e}");
+                            continue;
+                        }
+                        Err(e) => {
+                            tracing::warn!("handshake task failed: {e}");
+                            continue;
+                        }
+                    };
+                    let id = conn.remote_id();
+                    match self.peers.by_id(&id.to_string()) {
+                        Some(peer) => return Some((peer.clone(), conn)),
+                        None => {
+                            tracing::warn!(peer = %id, "refused a connection from an unknown peer");
+                            conn.close(1u8.into(), b"unknown peer");
+                        }
+                    }
                 }
             }
         }

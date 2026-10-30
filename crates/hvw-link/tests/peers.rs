@@ -98,3 +98,62 @@ async fn member_refuses_unknown_peer() {
     // Only the client got through `accept`.
     assert_eq!(server.await.unwrap(), vec!["client".to_owned()]);
 }
+
+/// A peer that starts a handshake and then goes silent must not keep a
+/// known client out. A UDP relay forwards the packets of the stranger to
+/// the member and drops the answers, so the handshake of the stranger
+/// never ends.
+#[tokio::test]
+async fn a_stalled_handshake_does_not_block_other_peers() {
+    let tmp = tempfile::tempdir().unwrap();
+    let member = node(tmp.path(), "member");
+    let client = node(tmp.path(), "client");
+    let stranger = node(tmp.path(), "stranger");
+
+    let relay = tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap();
+    // The member as the stranger sees it: behind the relay.
+    let mut via_relay = node(tmp.path(), "relay");
+    via_relay.name = "member";
+    via_relay.id = member.id.clone();
+    via_relay.addr = relay.local_addr().unwrap();
+    let to = member.addr;
+    tokio::spawn(async move {
+        let mut buf = vec![0u8; 65536];
+        loop {
+            let Ok((n, from)) = relay.recv_from(&mut buf).await else {
+                return;
+            };
+            if from != to {
+                relay.send_to(&buf[..n], to).await.ok();
+            }
+        }
+    });
+
+    let m = Link::bind(&config(&member, &[&client, &stranger]))
+        .await
+        .unwrap();
+    let c = Link::bind(&config(&client, &[&member])).await.unwrap();
+    let s = Link::bind(&config(&stranger, &[&via_relay])).await.unwrap();
+
+    tokio::spawn(async move {
+        while let Some((_, conn)) = m.accept().await {
+            tokio::spawn(async move {
+                let (mut send, mut recv) = conn.accept_bi().await.unwrap();
+                recv.read_to_end(64).await.unwrap();
+                send.write_all(b"pong").await.unwrap();
+                send.finish().unwrap();
+                send.stopped().await.ok();
+            });
+        }
+    });
+    let stalled = tokio::spawn(async move { ping(&s, "member").await });
+    // Let the stalled handshake reach the member first.
+    tokio::time::sleep(Duration::from_millis(500)).await;
+
+    let answer = tokio::time::timeout(Duration::from_secs(10), ping(&c, "member"))
+        .await
+        .expect("the client waits for the stalled handshake")
+        .unwrap();
+    assert_eq!(answer, b"pong");
+    stalled.abort();
+}
