@@ -27,7 +27,7 @@ struct Archive {
 }
 
 /// The store paths of a flake and of all its inputs, from the output of
-/// `nix flake archive --json --dry-run`.
+/// `nix flake archive --json`.
 pub fn archive_paths(json: &str) -> Result<Vec<String>, serde_json::Error> {
     fn walk(a: &Archive, out: &mut BTreeSet<String>) {
         out.insert(a.path.clone());

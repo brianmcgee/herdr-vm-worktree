@@ -73,13 +73,15 @@ pub async fn prepare(cfg: &Config, rec: &VmRecord, repo: &str, flake: &str) -> R
     .await
     .with_context(|| format!("cannot build the devshell of {repo}"))?;
     let env = std::fs::canonicalize(&profile)?;
+    // The archive copies the flake source and all inputs into the store.
+    // The evaluation copies only the paths that it reads, so without the
+    // archive a path of the list can be missing from the store.
     let archive = output(Command::new("nix").args([
         "--extra-experimental-features",
         "nix-command flakes",
         "flake",
         "archive",
         "--json",
-        "--dry-run",
         "--no-write-lock-file",
         flake,
     ]))

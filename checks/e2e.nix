@@ -97,6 +97,10 @@ pkgs.testers.runNixOSTest {
       ];
       # The test has no binary cache.
       nix.settings.substituters = lib.mkForce [ ];
+      # Nix 2.35 copies the source of a git flake into the store only when
+      # the evaluation needs it. The devshell of the test repo does not
+      # need it, so the member must copy it itself.
+      nix.package = pkgs.nixVersions.latest;
       security.pki.certificateFiles = [ "${certs}/ca.crt" ];
       networking.extraHosts = ''
         ${nodes.web.networking.primaryIPAddress} api.example.test other.example.test denied.example.test
