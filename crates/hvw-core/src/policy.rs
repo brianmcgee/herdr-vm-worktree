@@ -177,12 +177,17 @@ pub struct Gatekeeper {
 }
 
 /// The upstream deny list of iron-proxy, without RFC 1918 networks. The
-/// member adds its bridge network.
+/// member adds its bridge network. A connection to `::` goes to the member
+/// itself, and an IPv4-mapped address can go around the IPv4 entries. The
+/// nftables rules of the member also block each other address of the
+/// member.
 pub const DEFAULT_DENY_CIDRS: &[&str] = &[
     "0.0.0.0/8",
     "127.0.0.0/8",
     "169.254.0.0/16",
+    "::/128",
     "::1/128",
+    "::ffff:0:0/96",
     "fe80::/10",
     "fd00:ec2::254/128",
     "fd20:ce::254/128",

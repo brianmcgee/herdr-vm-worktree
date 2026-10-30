@@ -263,15 +263,25 @@ in
       # fetchers of fixed-output builds of a devshell) could use the
       # credentials of a VM. Only root (hvw-agent: readiness probe,
       # reload) may connect.
+      #
+      # A gatekeeper must not reach the services of the member for a VM:
+      # it opens no connection to an address of the member, except to DNS.
+      # The deny list of iron-proxy knows only fixed networks, and the
+      # addresses of the member can change.
       networking.nftables.tables.hvw-gatekeeper = {
         family = "inet";
         content = ''
           chain output {
             type filter hook output priority filter; policy accept;
             oifname "lo" ct state new tcp dport ${toString gatekeeperPorts.from}-${toString gatekeeperPorts.to} meta skuid != 0 reject with tcp reset
+            meta skgid "hvw-gatekeeper" ct state new fib daddr type local meta l4proto { tcp, udp } th dport != 53 reject
           }
         '';
       };
+      # The check of the ruleset at build time has no hvw-gatekeeper group.
+      networking.nftables.preCheckRuleset = ''
+        sed 's/skgid "hvw-gatekeeper"/skgid root/g' -i ruleset.conf
+      '';
 
       # Clients reach a fixed control plane port directly. Without `bind`,
       # the link uses a random port and the relay.

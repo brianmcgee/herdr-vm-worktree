@@ -53,6 +53,10 @@ flowchart LR
   resets each new local connection to a gatekeeper port from a user
   that is not root. Other users and the `nixbld` fetchers of the
   devshell builds thus cannot use the credentials of a VM.
+- **No member services through a gatekeeper.** An nftables rule rejects
+  each new connection from a gatekeeper to an address of the member,
+  except DNS. A policy host that resolves to the member gives the VM
+  nothing.
 
 ## What hvw does not protect against
 

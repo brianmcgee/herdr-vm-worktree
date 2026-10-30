@@ -104,6 +104,8 @@ pkgs.testers.runNixOSTest {
       security.pki.certificateFiles = [ "${certs}/ca.crt" ];
       networking.extraHosts = ''
         ${nodes.web.networking.primaryIPAddress} api.example.test other.example.test denied.example.test
+        ${nodes.member.networking.primaryIPAddress} member.example.test
+        :: zero.example.test
       '';
       services.hvw.member = {
         enable = true;
@@ -120,7 +122,11 @@ pkgs.testers.runNixOSTest {
         # No policy names it: no gatekeeper may load it.
         credentials.other = pkgs.writeText "other-credential" "other-secret";
         policies.web = {
-          domains = [ "api.example.test" ];
+          domains = [
+            "api.example.test"
+            "member.example.test"
+            "zero.example.test"
+          ];
           secrets = [
             {
               credential = "web";
@@ -353,6 +359,18 @@ pkgs.testers.runNixOSTest {
           )
           assert code.strip() == "403", code
           vm(member, name, "! curl -sk -m 5 --noproxy '*' https://${nodes.web.networking.primaryIPAddress}/")
+
+      with subtest("the gatekeeper does not reach the services of the member"):
+          member.succeed(
+              "systemd-run --unit=member-http ${pkgs.python3}/bin/python3 -m http.server --bind :: 8080"
+          )
+          member.wait_for_open_port(8080)
+          member.succeed("curl -sf -o /dev/null http://member.example.test:8080/")
+          for host in ["member.example.test", "zero.example.test"]:
+              code = agent(
+                  name, f"curl -s -m 10 -o /dev/null -w %{{http_code}} http://{host}:8080/ || true"
+              )
+              assert code.strip() != "200", (host, code)
 
       with subtest("an approved egress request opens the host for the VM"):
           vm(

@@ -122,12 +122,18 @@ Three filters guard the gatekeepers and the broker:
 |---|---|---|
 | Incus network ACL of each VM | from the VM | TCP to its own gatekeeper tunnel port and to the broker port |
 | nftables `hvw-bridge`, input | from the bridge into the member | DHCP, DNS, the broker port, the tunnel ports |
-| nftables `hvw-gatekeeper`, output | from member processes over `lo` | the gatekeeper ports for root only |
+| nftables `hvw-gatekeeper`, output | from member processes | the gatekeeper ports over `lo` for root only; no new connection from a gatekeeper to an address of the member, except DNS |
 
 The last filter is necessary because local traffic does not go through
 the bridge. Without it, each local user could use each gatekeeper.
 `hvw-agent` runs as root. It connects to the tunnel port to check that a
 gatekeeper is ready, and to the management port to reload a policy.
+
+A gatekeeper connects to the hosts of its policy for the VM. Without
+the rule for member addresses, a policy entry that resolves to the
+member, for example through DNS, would give the VM the services of the
+member. The deny list of iron-proxy knows only fixed networks, and the
+addresses of the member can change.
 
 ## Why one Incus per member, not a cluster
 
