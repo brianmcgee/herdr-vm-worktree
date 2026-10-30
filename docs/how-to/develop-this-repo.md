@@ -69,4 +69,3 @@ In `e2e`, the `hvw launch` step alone takes about 4 minutes.
   programs, not mocks.
 - Each commit builds and passes its checks.
 - Kernel-style commit messages.
-- Design decisions go in [plan.md](../../plan.md).

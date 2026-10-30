@@ -19,8 +19,7 @@ flowchart LR
   gk --> net((allowed hosts))
 ```
 
-Start with the [documentation](docs/README.md). The design record is in
-[plan.md](plan.md).
+Start with the [documentation](docs/README.md).
 
 ```sh
 nix develop          # Rust, Nix and Python tools, language servers
