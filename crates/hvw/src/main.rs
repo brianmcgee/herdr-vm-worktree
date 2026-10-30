@@ -9,6 +9,7 @@ use clap::{Parser, Subcommand, ValueEnum};
 use hvw::herdr::{Herdr, WorktreeEvent};
 use hvw::local::{self, decode};
 use hvw::state::{Store, VmEntry};
+use hvw::view;
 use hvw_core::manifest::{self, Manifest, Source};
 use hvw_core::vm::vm_name;
 use hvw_link::frame::{Chunk, read_chunk, write_chunk};
@@ -86,9 +87,40 @@ enum Cmd {
         target: VmTarget,
     },
     /// List the VMs of this client on all members.
-    List,
+    ///
+    /// Columns:
+    ///   VM        the name of the VM
+    ///   MEMBER    the member (Incus host) that runs the VM
+    ///   STATUS    the Incus status, for example Running or Stopped
+    ///   ADDRESS   the IPv4 address of the VM on the bridge of its member
+    ///   REPOS     the repos in /work in the VM
+    ///   POLICIES  the egress policies of the VM
+    ///   PENDING   the number of egress requests that wait for a decision
+    ///   WORKTREE  the worktree on this client, `-` if this client has no
+    ///             entry for the VM
+    #[command(verbatim_doc_comment)]
+    List {
+        /// Print JSON instead of a table.
+        #[arg(long)]
+        json: bool,
+    },
     /// List the egress requests that wait for a decision.
-    Pending,
+    ///
+    /// Columns:
+    ///   ID      the id of the request, for `hvw decide`
+    ///   MEMBER  the member that runs the VM
+    ///   VM      the VM of the agent that asks
+    ///   METHOD  the method of the request that the gatekeeper refused
+    ///   HOST    the host of the refused request
+    ///   PATH    the path of the refused request, `-` for CONNECT
+    ///   AGE     the time since the agent asked
+    ///   REASON  the reason of the agent (untrusted text)
+    #[command(verbatim_doc_comment)]
+    Pending {
+        /// Print JSON instead of a table.
+        #[arg(long)]
+        json: bool,
+    },
     /// Decide on an egress request.
     Decide {
         /// The id of the request, from `hvw pending`.
@@ -194,8 +226,8 @@ async fn run(cmd: Cmd) -> Result<ExitCode> {
             destroy(&store, &entry).await?;
             println!("destroyed {}", entry.vm);
         }
-        Cmd::List => list().await?,
-        Cmd::Pending => pending(&store)?,
+        Cmd::List { json } => list(&store, json).await?,
+        Cmd::Pending { json } => pending(&store, json)?,
         Cmd::Decide {
             id,
             decision,
@@ -268,25 +300,6 @@ fn say(line: &str) {
     eprintln!("hvw: {line}");
 }
 
-/// The VMs of this client on each reachable member.
-async fn list_members() -> Result<Vec<(String, Result<Vec<VmInfo>>)>> {
-    let members = local::members().await?;
-    let mut tasks = Vec::new();
-    for m in members {
-        tasks.push(tokio::spawn(async move {
-            let r = local::call(&m, &Request::List, None, |_| {})
-                .await
-                .and_then(decode::<Vec<VmInfo>>);
-            (m, r)
-        }));
-    }
-    let mut out = Vec::new();
-    for t in tasks {
-        out.push(t.await?);
-    }
-    Ok(out)
-}
-
 /// The Incus status of a VM, or `None` when its member does not answer.
 async fn status(e: &VmEntry) -> Option<String> {
     let vms: Vec<VmInfo> = local::call(&e.member, &Request::List, None, |_| {})
@@ -300,19 +313,19 @@ async fn status(e: &VmEntry) -> Option<String> {
     )
 }
 
-async fn pick_member(place: &Place) -> Result<String> {
+async fn pick_member(store: &Store, place: &Place) -> Result<String> {
     if let Some(m) = &place.member {
         return Ok(m.clone());
     }
     let mut best: Option<(usize, String)> = None;
-    for (m, r) in list_members().await? {
-        match r {
-            Ok(vms) => {
-                if best.as_ref().is_none_or(|(n, _)| vms.len() < *n) {
-                    best = Some((vms.len(), m));
+    for m in view::snapshot(store).await?.members {
+        match m.error {
+            None => {
+                if best.as_ref().is_none_or(|(n, _)| m.vms < *n) {
+                    best = Some((m.vms, m.name));
                 }
             }
-            Err(e) => say(&format!("skipping the member {m}: {e:#}")),
+            Some(e) => say(&format!("skipping the member {}: {e}", m.name)),
         }
     }
     best.map(|(_, m)| m).context("no member answers")
@@ -320,7 +333,7 @@ async fn pick_member(place: &Place) -> Result<String> {
 
 async fn launch(store: &Store, worktree: &Path, place: Place) -> Result<VmEntry> {
     let manifest = read_manifest(worktree)?;
-    let member = pick_member(&place).await?;
+    let member = pick_member(store, &place).await?;
     let entry = VmEntry {
         vm: vm_name(&worktree.to_string_lossy()),
         member,
@@ -440,26 +453,25 @@ async fn destroy(store: &Store, entry: &VmEntry) -> Result<()> {
     store.remove(&entry.vm)
 }
 
-async fn list() -> Result<()> {
+async fn list(store: &Store, json: bool) -> Result<()> {
+    let s = view::snapshot(store).await?;
+    if json {
+        println!("{}", view::json(&s.vms)?);
+    } else if s.vms.is_empty() {
+        say("no VMs");
+    } else {
+        let rows: Vec<_> = s.vms.iter().map(view::VmRow::cells).collect();
+        print!("{}", view::table(view::VM_COLUMNS, &rows));
+    }
     let mut failed = false;
-    for (m, r) in list_members().await? {
-        match r {
-            Ok(vms) => {
-                for v in vms {
-                    println!(
-                        "{}\t{m}\t{}\t{}\t{}\t{} pending",
-                        v.name,
-                        v.status,
-                        v.address,
-                        v.repos.join(","),
-                        v.pending
-                    );
-                }
-            }
-            Err(e) => {
-                failed = true;
-                eprintln!("hvw: the member {m} does not answer: {e:#}");
-            }
+    for m in &s.members {
+        if let Some(e) = &m.error {
+            failed = true;
+            eprintln!(
+                "hvw: the member {} does not answer: {}",
+                m.name,
+                view::one_line(e)
+            );
         }
     }
     if failed {
@@ -468,18 +480,17 @@ async fn list() -> Result<()> {
     Ok(())
 }
 
-fn pending(store: &Store) -> Result<()> {
-    for p in store.pending()? {
-        println!(
-            "{}\t{}\t{}\t{} {} {}\t{}",
-            p.id,
-            p.member,
-            p.vm,
-            p.refusal.method,
-            p.refusal.host,
-            p.refusal.path,
-            p.reason.replace(['\n', '\t'], " ")
-        );
+fn pending(store: &Store, json: bool) -> Result<()> {
+    let mut p = store.pending()?;
+    p.sort_by_key(|p| (p.created, p.id));
+    if json {
+        println!("{}", view::json(&p)?);
+    } else if p.is_empty() {
+        say("no pending requests");
+    } else {
+        let now = view::now();
+        let rows: Vec<_> = p.iter().map(|p| view::pending_cells(p, now)).collect();
+        print!("{}", view::table(view::PENDING_COLUMNS, &rows));
     }
     Ok(())
 }

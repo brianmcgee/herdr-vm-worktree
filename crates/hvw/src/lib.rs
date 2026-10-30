@@ -11,3 +11,4 @@ pub mod herdr;
 pub mod local;
 pub mod paths;
 pub mod state;
+pub mod view;

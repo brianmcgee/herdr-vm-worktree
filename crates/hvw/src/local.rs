@@ -7,7 +7,7 @@
 //!   side of the stream.
 
 use anyhow::{Context, Result};
-use hvw_link::{Reply, Request, frame, read_reply};
+use hvw_link::{Reply, Request, VmInfo, frame, read_reply};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -58,6 +58,25 @@ pub async fn open(member: &str, req: &Request) -> Result<Stream> {
     frame::write(&mut sock, req).await?;
     let (recv, send) = sock.into_split();
     Ok(Stream { recv, send })
+}
+
+/// The VMs of this client on each member. The result of each member is
+/// separate, so that one member that does not answer hides no other.
+pub async fn list_all() -> Result<Vec<(String, Result<Vec<VmInfo>>)>> {
+    let mut tasks = Vec::new();
+    for m in members().await? {
+        tasks.push(tokio::spawn(async move {
+            let r = call(&m, &Request::List, None, |_| {})
+                .await
+                .and_then(decode::<Vec<VmInfo>>);
+            (m, r)
+        }));
+    }
+    let mut out = Vec::new();
+    for t in tasks {
+        out.push(t.await?);
+    }
+    Ok(out)
 }
 
 /// Sends a request with an optional body and reads the answer.

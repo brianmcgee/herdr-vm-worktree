@@ -183,6 +183,12 @@ pkgs.testers.runNixOSTest {
           """Runs a command in a login shell of the harness user in /work/repo."""
           return vm(member, name, f"cd /work/repo && bash -l -c {shlex.quote(command)}", user=1000)
 
+      def pending_id(host):
+          """The id of the pending request for a host. pending.json can still
+          hold an older request for a moment after a decision."""
+          requests = json.loads(alice("hvw pending --json"))
+          return next(p["id"] for p in requests if p["refusal"]["host"] == host)
+
       start_all()
       require_nested_kvm(member)
       member.wait_for_unit("hvw-agent.service")
@@ -236,7 +242,7 @@ pkgs.testers.runNixOSTest {
 
       with subtest("hvw launch starts a VM with the repo"):
           alice("hvw launch", timeout=1800)
-          name = alice("hvw list").split()[0]
+          name = json.loads(alice("hvw list --json"))[0]["name"]
           assert name.startswith("hvw-repo-"), name
 
       with subtest("the VM has the uncommitted change"):
@@ -296,7 +302,7 @@ pkgs.testers.runNixOSTest {
           assert agent(name, "head -3 ~/.claude/skills/egress-request/SKILL.md").startswith("---"), (
               "the agent has no egress-request skill"
           )
-          rid = pending.split()[0]
+          rid = pending_id("other.example.test")
           alice(f"hvw decide {rid} vm")
           member.wait_until_succeeds(vm_command(name, "test -e /tmp/er.rc"), timeout=120)
           assert vm(member, name, "cat /tmp/er.rc").strip() == "0"
@@ -315,7 +321,7 @@ pkgs.testers.runNixOSTest {
               "sudo -u alice env XDG_RUNTIME_DIR=/run/user/1000 hvw pending | grep -q denied.example.test",
               timeout=120,
           )
-          rid = alice("hvw pending").split()[0]
+          rid = pending_id("denied.example.test")
           alice(f"hvw decide {rid} deny")
           member.wait_until_succeeds(vm_command(name, "test -e /tmp/er2.rc"), timeout=120)
           assert vm(member, name, "cat /tmp/er2.rc").strip() == "1"
@@ -340,6 +346,6 @@ pkgs.testers.runNixOSTest {
       with subtest("hvw destroy deletes the VM"):
           alice("hvw destroy")
           member.wait_until_succeeds(f"! incus info {name}", timeout=120)
-          assert alice("hvw list").strip() == ""
+          assert json.loads(alice("hvw list --json")) == []
     '';
 }
