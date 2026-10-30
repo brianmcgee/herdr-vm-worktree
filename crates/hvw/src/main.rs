@@ -5,10 +5,11 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use anyhow::{Context, Result, bail};
-use clap::{Parser, Subcommand, ValueEnum};
+use clap::{CommandFactory, Parser, Subcommand, ValueEnum};
 use hvw::herdr::{Herdr, WorktreeEvent};
 use hvw::local::{self, decode};
 use hvw::state::{Store, VmEntry};
+use hvw::tui::View;
 use hvw::view;
 use hvw_core::manifest::{self, Manifest, Source};
 use hvw_core::vm::vm_name;
@@ -19,10 +20,13 @@ use hvw_link::{
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 #[derive(Parser)]
-#[command(version, about = "Run herdr worktrees in VMs on Incus members")]
+#[command(
+    version,
+    about = "Run herdr worktrees in VMs on Incus members. Without a command, open the terminal UI."
+)]
 struct Cli {
     #[command(subcommand)]
-    command: Cmd,
+    command: Option<Cmd>,
 }
 
 #[derive(clap::Args, Clone)]
@@ -98,7 +102,10 @@ enum Cmd {
     ///   PENDING   the number of egress requests that wait for a decision
     ///   WORKTREE  the worktree on this client, `-` if this client has no
     ///             entry for the VM
-    #[command(verbatim_doc_comment)]
+    #[command(
+        verbatim_doc_comment,
+        about = "List the VMs of this client on all members"
+    )]
     List {
         /// Print JSON instead of a table.
         #[arg(long)]
@@ -115,7 +122,10 @@ enum Cmd {
     ///   PATH    the path of the refused request, `-` for CONNECT
     ///   AGE     the time since the agent asked
     ///   REASON  the reason of the agent (untrusted text)
-    #[command(verbatim_doc_comment)]
+    #[command(
+        verbatim_doc_comment,
+        about = "List the egress requests that wait for a decision"
+    )]
     Pending {
         /// Print JSON instead of a table.
         #[arg(long)]
@@ -172,13 +182,27 @@ impl From<Scope> for Decision {
 #[tokio::main]
 async fn main() -> ExitCode {
     let cli = Cli::parse();
-    match run(cli.command).await {
+    let r = match cli.command {
+        Some(cmd) => run(cmd).await,
+        None if std::io::stdin().is_terminal() && std::io::stdout().is_terminal() => tui().await,
+        None => {
+            Cli::command().print_help().ok();
+            Ok(ExitCode::from(2))
+        }
+    };
+    match r {
         Ok(code) => code,
         Err(e) => {
             eprintln!("hvw: {e:#}");
             ExitCode::FAILURE
         }
     }
+}
+
+/// Runs the terminal UI. It prints the Nix changes of its policy grants.
+async fn tui() -> Result<ExitCode> {
+    hvw::tui::run(View::Vms).await?;
+    Ok(ExitCode::SUCCESS)
 }
 
 async fn run(cmd: Cmd) -> Result<ExitCode> {
