@@ -68,7 +68,7 @@ Only the members and clients of the instance may use the relay.
 | `farmRetentionDays` | `14` | `hvw-agent` deletes a farm that no VM used for this many days. |
 | `vm.cpus` | `2` | vCPUs of each VM. |
 | `vm.memory` | `4GiB` | Memory of each VM, in Incus syntax. |
-| `vm.harness` | `[ "bash" "--login" ]` | The agent harness command. `hvw attach` runs it in the first repo. |
+| `vm.harness` | `[ "/run/current-system/sw/bin/bash" "--login" ]` | The agent harness command. `hvw attach` runs it in the first repo, after the devshell is in `PATH`. |
 | `credentials` | `{}` | Credential files by name. Each gatekeeper loads them as systemd credentials. |
 | `policies` | `{}` | Egress policies by name. See below. |
 

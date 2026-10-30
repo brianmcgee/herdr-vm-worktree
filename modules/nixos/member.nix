@@ -115,11 +115,13 @@ in
       };
       harness = mkOption {
         type = types.listOf types.str;
+        # The devshell puts a bash without readline first in PATH, so the
+        # default names the interactive bash of the image.
         default = [
-          "bash"
+          "/run/current-system/sw/bin/bash"
           "--login"
         ];
-        description = "The command of the agent harness in the VM. `hvw attach` runs it in the first repo.";
+        description = "The command of the agent harness in the VM. `hvw attach` runs it in the first repo, after the devshell is in PATH.";
       };
     };
 

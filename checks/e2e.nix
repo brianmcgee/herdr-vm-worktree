@@ -307,8 +307,14 @@ pkgs.testers.runNixOSTest {
           assert vm(member, name, "cat /tmp/er2.rc").strip() == "1"
 
       with subtest("hvw attach runs the harness in the repo"):
-          out = alice("printf 'echo marker-$((6*7)) $PWD\\nexit 3\\n' | hvw attach; echo rc=$?")
+          out = alice(
+              "printf 'echo marker-$((6*7)) $PWD\\nshopt -oq emacs && echo editing-$((2*2))\\nexit 3\\n'"
+              " | hvw attach; echo rc=$?"
+          )
           assert "marker-42 /work/repo" in out, out
+          # The devshell puts a bash without readline first in PATH. The
+          # harness shell must still edit lines and expand the prompt.
+          assert "editing-4" in out, out
           assert "rc=3" in out, out
 
       with subtest("hvw fetch gets the commits of the VM"):
