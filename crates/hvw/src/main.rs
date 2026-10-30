@@ -451,9 +451,7 @@ async fn fetch(entry: &VmEntry, manifest: &Manifest) -> Result<()> {
         let mut s = local::open(&entry.member, &req).await?;
         s.send.shutdown().await?;
         let info: FetchInfo = decode(read_reply(&mut s.recv, say).await?)?;
-        let mut bundle = Vec::new();
-        s.recv.read_to_end(&mut bundle).await?;
-        hvw::git::fetch_bundle(path, &entry.vm, &bundle).await?;
+        hvw::git::fetch_bundle(path, &entry.vm, &mut s.recv).await?;
         match info.head {
             Some(h) => println!(
                 "{}: fetched the branches as refs/remotes/{}/*; the VM is on {}",

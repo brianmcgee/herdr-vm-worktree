@@ -97,23 +97,37 @@ pub async fn bundle(repo: &Path, vm: &str, snap: &Snapshot) -> Result<Vec<u8>> {
 }
 
 /// Fetches a bundle of the branches of a VM into `refs/remotes/<vm>/`.
-/// Branches that the VM deleted go away.
-pub async fn fetch_bundle(repo: &Path, vm: &str, bundle: &[u8]) -> Result<()> {
+/// Branches that the VM deleted go away. The VM controls the bundle, so
+/// its size has a limit and git checks each object.
+pub async fn fetch_bundle<R: tokio::io::AsyncRead + Unpin>(
+    repo: &Path,
+    vm: &str,
+    bundle: &mut R,
+) -> Result<()> {
     let dir = tempdir_in(repo).await?;
     let file = dir.join("vm.bundle");
-    tokio::fs::write(&file, bundle).await?;
-    let file_s = file.to_string_lossy().into_owned();
-    let r = git(
-        repo,
-        &[
-            "fetch",
-            "--quiet",
-            "--no-tags",
-            "--prune",
-            &file_s,
-            &format!("+refs/heads/*:refs/remotes/{vm}/*"),
-        ],
-    )
+    let r = async {
+        let mut f = tokio::fs::File::create(&file).await?;
+        hvw_link::copy_limited(bundle, &mut f, hvw_link::MAX_BUNDLE)
+            .await
+            .context("cannot receive the bundle")?;
+        drop(f);
+        let file_s = file.to_string_lossy().into_owned();
+        git(
+            repo,
+            &[
+                "-c",
+                "fetch.fsckObjects=true",
+                "fetch",
+                "--quiet",
+                "--no-tags",
+                "--prune",
+                &file_s,
+                &format!("+refs/heads/*:refs/remotes/{vm}/*"),
+            ],
+        )
+        .await
+    }
     .await;
     tokio::fs::remove_dir_all(&dir).await.ok();
     r.map(drop)
@@ -192,13 +206,44 @@ mod tests {
              git bundle create -q ../vm.bundle --branches",
         );
         let back = std::fs::read(tmp.path().join("vm.bundle")).unwrap();
-        fetch_bundle(&repo, "hvw-x-1", &back).await.unwrap();
+        fetch_bundle(&repo, "hvw-x-1", &mut &back[..])
+            .await
+            .unwrap();
         assert_eq!(
             sh(&repo, "git show refs/remotes/hvw-x-1/feat:f"),
             "c",
             "the commit of the VM is on the client"
         );
         assert_eq!(sh(&repo, "ls .git | grep hvw- || true"), "");
+    }
+
+    /// A VM can put any object into its bundle. A tree with a `.git`
+    /// entry would write into the git directory of a checkout.
+    #[tokio::test]
+    async fn fetch_refuses_bad_objects() {
+        let tmp = tempfile::tempdir().unwrap();
+        let repo = tmp.path().join("repo");
+        std::fs::create_dir_all(&repo).unwrap();
+        sh(
+            &repo,
+            "git init -q -b main; echo a > f; git add f; git commit -qm a",
+        );
+        sh(
+            tmp.path(),
+            "git init -q vm; cd vm
+             blob=$(echo '[core]' | git hash-object -w --stdin)
+             sub=$(printf '100644 blob %s\\tconfig\\n' $blob | git mktree)
+             bad=$(printf '040000 tree %s\\t.git\\n' $sub | git mktree)
+             commit=$(git commit-tree -m bad $bad)
+             git update-ref refs/heads/bad $commit
+             git bundle create -q ../vm.bundle --branches",
+        );
+        let back = std::fs::read(tmp.path().join("vm.bundle")).unwrap();
+        let err = fetch_bundle(&repo, "hvw-x-1", &mut &back[..])
+            .await
+            .unwrap_err();
+        assert!(format!("{err:#}").contains(".git"), "{err:#}");
+        assert_eq!(sh(&repo, "git for-each-ref refs/remotes"), "");
     }
 
     #[tokio::test]
