@@ -3,7 +3,7 @@
 ## Goal
 
 Run each herdr worktree in its own short-lived VM on a remote Incus
-cluster. The VM holds no credential. A per-VM egress gatekeeper injects
+member host. The VM holds no credential. A per-VM egress gatekeeper injects
 credentials and enforces a domain allowlist. When an agent hits a refused
 request that it needs, it asks for review. The user approves or denies the
 request in herdr, and the agent continues.
@@ -23,13 +23,14 @@ clan that deploys it.
 
 ## Terms
 
-- **Member**: a host of the Incus cluster.
+- **Member**: a host that runs worktree VMs, with its own standalone
+  Incus.
 - **Client**: the machine that runs the herdr server and the `hvw` CLI
   (for example saturn or pandora).
 - **Worktree VM**: one Incus VM for one herdr worktree workspace.
 - **Gatekeeper**: the iron-proxy instance of one worktree VM.
-- **Policy**: an allowlist, a set of secret mappings, an ACL and an
-  Incus profile, defined in Nix.
+- **Policy**: an allowlist, a set of secret mappings and plain
+  environment variables, defined in Nix.
 - **Workspace manifest**: the list of repos and refs that one worktree VM
   receives.
 - **Farm**: a btrfs subvolume that holds the store closure of one
@@ -44,7 +45,7 @@ flowchart LR
     W[hvw-watch user service]
     C[hvw CLI]
   end
-  subgraph Member["Cluster member"]
+  subgraph Member["Member"]
     A[hvw-agent]
     I[incusd]
     G["iron-proxy@vm"]
@@ -70,23 +71,28 @@ bridge of its member.
 
 ## Components
 
-### Cluster
+### Members
 
 - Hetzner dedicated servers (Robot). Hetzner Cloud servers give no
   nested KVM, so they cannot run worktree VMs.
-- Three members in one location, for database quorum. Two members work
-  but give no fault tolerance for the cluster database.
+- Members in one location. Each member runs its own Incus, not an Incus
+  cluster: `hvw-agent` manages only the VMs, farms and gatekeepers of its
+  own member, and the client picks a member over iroh. A cluster would
+  add a shared database with a quorum of three and a join with runtime
+  tokens, but no function that hvw uses.
 - Each member has one btrfs filesystem for `/nix` and
-  `/var/lib/hvw`. Reflinks need one filesystem.
-- Incus cluster with a local btrfs storage pool on each member.
+  `/var/lib/hvw`. Reflinks need one filesystem. `hvw-agent` refuses to
+  start when the store and its state directory are not on one btrfs
+  filesystem.
+- A local btrfs storage pool on each member.
 - One Incus bridge on each member. No OVN.
-- The members use the same Incus version.
 
 ### Base image
 
-- One generic NixOS image, built by this flake. It holds the agent
-  harness, git, direnv, nix-direnv, `egress-request`, and the boot hooks
-  for the CA, the proxy variables and the store overlay.
+- One generic NixOS image, built by this flake. It holds git,
+  `egress-request`, the `egress-request` skill for the agent, and the
+  boot hooks for the CA, the proxy variables and the store overlay. The
+  option `hvw.image.packages` adds the agent harness.
 - The image changes rarely. It does not contain any repo devshell.
 - Each worktree VM is a copy-on-write clone of the image on the local
   pool, launched with `incus launch --ephemeral`. Incus deletes the VM
@@ -140,15 +146,20 @@ Risks:
 - Both directions use git pack streams over the control plane, through
   `hvw-agent` and `incus exec`. The VM needs no SSH, no inbound port and
   no forge token.
-- `hvw-agent` writes `.envrc` with `use flake` into each repo directory.
-  Each repo gets its own shell.
+- Each repo gets its own shell. The farm of a repo holds `devenv.sh`, the
+  environment of its devshell, made on the member. A login shell in
+  `/work/<repo>` sources it. The VM does not use direnv and `use flake`:
+  evaluation of the flake in the VM would fetch the flake inputs from
+  the forges, and the gatekeeper does not allow them.
 
 ### Workspace manifest
 
 - A small file lists each repo, its ref or local path, and the policy.
 - One VM has one gatekeeper. The policy of a multi-repo workspace is the
   union of the domains and secret mappings of its repos.
-- Format: TOML or JSON, decided in the first milestone.
+- Format: TOML, in `hvw.toml` at the root of the worktree. Each
+  `[[repo]]` has a `path` or a `url` with an optional `ref`, and a
+  `policy`.
 
 ### Egress gatekeeper
 
@@ -165,9 +176,11 @@ Risks:
   the secrets of every policy that it can run.
 - An Incus network ACL denies all egress of the VM except the gatekeeper
   port and the broker port on the member bridge address.
-- An Incus profile for each policy sets `HTTP_PROXY`, `HTTPS_PROXY`,
-  `NODE_EXTRA_CA_CERTS`, the placeholder strings and the CA path through
-  cloud-init or the image boot hooks.
+- The environment of the agent harness (`HTTP_PROXY`, `HTTPS_PROXY`,
+  `NODE_EXTRA_CA_CERTS`, the placeholder strings and the CA path) is a
+  file, `/run/hvw/env`, that `hvw-agent` writes into the VM at launch. A
+  login shell reads it. It is not an Incus profile: the proxy port and
+  the CA are different for each VM.
 - The audit log of one VM is `journalctl -u iron-proxy@<vm>`.
 
 Limits:
@@ -211,14 +224,15 @@ sequenceDiagram
 4. A request names domains, methods and paths only. It never names a
    secret.
 5. The user selects one scope:
-   - **VM**: the broker writes `/var/lib/hvw/vms/<vm>/egress.json` and
-     restarts the gatekeeper. The grant goes away with the VM.
+   - **VM**: the broker adds the grant to the record of the VM
+     (`/var/lib/hvw/vms/<vm>/vm.json`) and reloads the gatekeeper. The
+     grant goes away with the VM.
    - **Policy**: the grant also goes into a pending policy file. New VMs
      of that policy receive it until the next deploy. `hvw` prints the Nix
      change for the clan repo, and the user commits and deploys it.
    - **Deny**: the request of the agent returns an error.
-6. A restart of the gatekeeper drops open connections of that VM. Check
-   whether iron-proxy can reload its config without a restart.
+6. The broker reloads iron-proxy through its management API
+   (`POST /v1/reload`), without a restart of the process.
 
 Risk: the human approval is the security control. An agent under prompt
 injection asks for an exfiltration host with a plausible reason. The
@@ -274,12 +288,14 @@ The herdr plugin API of herdr 0.9.3 provides the parts below.
 
 ### Clan integration
 
-- A clan service module with the roles `member` and `client`.
-  - `member`: Incus cluster, btrfs layout checks, `hvw-agent`,
+- A clan service module with the roles `member`, `client` and `relay`.
+  - `member`: Incus, btrfs layout checks, `hvw-agent`,
     `iron-proxy@` template, policies, vars for the iroh key and the
     policy secrets.
   - `client`: `hvw` CLI, `hvw-watch` user service, the herdr plugin, the
     iroh key var.
+  - `relay`: an optional self-hosted `iroh-relay` that only the machines
+    of the service may use.
 - Policies are settings of the service instance.
 - A plain NixOS module for each role, so that a configuration without
   clan can use it.
@@ -340,8 +356,8 @@ The herdr plugin API of herdr 0.9.3 provides the parts below.
    workspace, a first VM test that boots one node and starts an Incus VM
    in it. Decide the manifest format.
 2. **Gatekeeper**: iron-proxy package, `iron-proxy@` template, per-VM CA,
-   Incus ACL and profile. VM test: allowed host passes, refused host gets
-   403, placeholder replaced, other ports blocked.
+   Incus ACL and VM environment. VM test: allowed host passes, refused
+   host gets 403, placeholder replaced, other ports blocked.
 3. **Store delivery**: farms, snapshots, overlay and `--load-db` in the
    base image. VM test: devshell works in the VM, a path outside the
    closure is absent.
@@ -357,12 +373,22 @@ The herdr plugin API of herdr 0.9.3 provides the parts below.
 8. **Clan**: clan service module, roles, vars, example inventory.
 9. **Self-hosted relay**: optional `iroh-relay` role.
 
+## Findings
+
+- An Incus VM at the third level of nesting: `incus launch` takes about
+  25 s, and the Incus agent answers about 115 s later (M1 VM test). The
+  e2e `hvw launch`, with the devshell build of the farm, takes about
+  240 s.
+- iron-proxy reloads its config without a restart (see step 6 of the
+  escalation).
+- The flake output of a clan service module is `clan.modules.<name>`.
+  clan-core reads it when an instance sets `module.input`.
+- Unused farms are deleted after 14 days
+  (`services.hvw.member.farmRetentionDays`).
+- The workspace manifest is `hvw.toml` (see "Workspace manifest").
+
 ## Open questions
 
-- Boot time of an Incus VM at the third level of nesting in VM tests.
-- Can iron-proxy reload its config without a restart?
 - Does herdr screen detection see the agent behind `hvw attach`? The
-  `report-agent` path works either way.
-- Exact flake output name for a clan service module.
-- Retention period for unused farms.
-- Workspace manifest format and location.
+  `report-agent` path works either way. Not tested: it needs a real
+  agent harness in a worktree VM.
