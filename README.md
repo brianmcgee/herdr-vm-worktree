@@ -19,7 +19,12 @@ flowchart LR
   gk --> net((allowed hosts))
 ```
 
-Start with the [documentation](docs/README.md).
+Start with the [documentation](docs/README.md). The
+[architecture](docs/explanation/architecture.md) page explains the
+components, the life of a VM, the store delivery and the control plane.
+The [security model](docs/explanation/security-model.md) explains what
+the VM can and cannot do. The code layout is in
+[Develop and test this repo](docs/how-to/develop-this-repo.md#layout).
 
 ```sh
 nix develop          # Rust, Nix and Python tools, language servers

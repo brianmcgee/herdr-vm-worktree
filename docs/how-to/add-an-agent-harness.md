@@ -1,7 +1,8 @@
 # Add an agent harness to the image
 
-The default image runs `bash --login` and holds no agent. Build your own
-image with the harness and give it to the members.
+The default image runs its own interactive bash
+(`/run/current-system/sw/bin/bash --login`) and holds no agent. Build
+your own image with the harness and give it to the members.
 
 ```nix
 roles.member.machines.forge.settings.extraConfig = {
