@@ -231,9 +231,11 @@ in
       # Incus makes a tap device for the NIC of each VM.
       boot.kernelModules = [ "tun" ];
 
-      # The VMs reach DHCP, DNS, the gatekeeper tunnels and the broker on
-      # the bridge. The network ACL of each VM narrows this to its own
-      # gatekeeper.
+      # The VMs reach DHCP, the gatekeeper tunnels and the broker on the
+      # bridge. The network ACL of each VM narrows this to its own
+      # gatekeeper. The VMs get no DNS: the gatekeeper resolves the
+      # names, and a resolver would forward the queries of a VM to the
+      # internet.
       #
       # The ACL loads bridge conntrack. Then the DHCP broadcasts of a VM
       # come into the IP stack with the conntrack state `invalid`, and the
@@ -249,7 +251,6 @@ in
             iifname != "${cfg.bridge.name}" accept
             udp sport 68 udp dport 67 accept
             ct state established,related accept
-            meta l4proto { tcp, udp } th dport 53 accept
             tcp dport ${toString cfg.brokerPort} accept
             tcp dport ${toString tunnelPorts.from}-${toString tunnelPorts.to} accept
             drop
@@ -307,6 +308,8 @@ in
                 "ipv4.address" = "${cfg.bridge.address}/${toString cfg.bridge.prefixLength}";
                 "ipv4.nat" = "false";
                 "ipv6.address" = "none";
+                # DHCP only. `port=0` stops the DNS server of dnsmasq.
+                "raw.dnsmasq" = "port=0";
               };
             }
           ];

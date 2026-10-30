@@ -32,6 +32,8 @@ flowchart LR
 - **Two ports, nothing else.** An Incus network ACL drops all traffic of
   the VM except its gatekeeper port and the broker port on the member
   bridge.
+- **No DNS.** dnsmasq on the bridge serves DHCP only. The VM cannot
+  send data out in the names of DNS queries.
 - **Only the devshell closures.** The VM gets read-only snapshots of its
   farms. It never sees the store of the member.
 - **No way back to the client.** The VM has no herdr socket, no SSH and

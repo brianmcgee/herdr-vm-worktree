@@ -372,6 +372,11 @@ pkgs.testers.runNixOSTest {
               )
               assert code.strip() != "200", (host, code)
 
+      with subtest("the VM gets no DNS from the member"):
+          # With DNS, the answer came in milliseconds. Without it,
+          # resolved tries for two minutes.
+          member.fail(vm_command(name, f"timeout 10 resolvectl query --cache=no {name}.incus"))
+
       with subtest("an approved egress request opens the host for the VM"):
           vm(
               member,

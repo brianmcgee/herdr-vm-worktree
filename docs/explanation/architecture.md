@@ -121,8 +121,13 @@ Three filters guard the gatekeepers and the broker:
 | Filter | Traffic | Lets through |
 |---|---|---|
 | Incus network ACL of each VM | from the VM | TCP to its own gatekeeper tunnel port and to the broker port |
-| nftables `hvw-bridge`, input | from the bridge into the member | DHCP, DNS, the broker port, the tunnel ports |
+| nftables `hvw-bridge`, input | from the bridge into the member | DHCP, the broker port, the tunnel ports |
 | nftables `hvw-gatekeeper`, output | from member processes | the gatekeeper ports over `lo` for root only; no new connection from a gatekeeper to an address of the member, except DNS |
+
+The VMs get no DNS: dnsmasq on the bridge serves DHCP only. The
+gatekeeper resolves the names for the VM. A resolver on the bridge would
+forward the queries of a VM to the internet, and a VM could send data
+out in the names.
 
 The last filter is necessary because local traffic does not go through
 the bridge. Without it, each local user could use each gatekeeper.
