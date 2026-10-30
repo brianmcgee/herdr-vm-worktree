@@ -288,7 +288,7 @@ fn read_manifest(worktree: &Path) -> Result<Manifest> {
     let path = worktree.join(manifest::FILE_NAME);
     let text = std::fs::read_to_string(&path)
         .with_context(|| format!("cannot read the workspace manifest {}", path.display()))?;
-    Ok(Manifest::parse(&text, worktree)?)
+    Ok(Manifest::parse(&text, worktree)?.resolve_paths(worktree)?)
 }
 
 /// The entry of a worktree. herdr and the shell can name one worktree by

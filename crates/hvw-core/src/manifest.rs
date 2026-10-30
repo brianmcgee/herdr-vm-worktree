@@ -48,6 +48,10 @@ pub enum Error {
     EmptyPolicy(String),
     #[error("repo URL {0:?} is not valid: use an https:// URL")]
     BadUrl(String),
+    #[error("repo path {0:?} is outside the worktree: use `url` for other repos")]
+    OutsideWorktree(PathBuf),
+    #[error("cannot resolve the repo path {path:?}: {error}")]
+    Resolve { path: PathBuf, error: String },
 }
 
 /// Where the source of a repo comes from.
@@ -144,7 +148,11 @@ impl Manifest {
                     if r.git_ref.is_some() {
                         return Err(Error::RefWithoutUrl(index));
                     }
-                    Source::Path(normalize(&base.join(path)))
+                    let full = normalize(&base.join(path));
+                    if !full.starts_with(normalize(base)) {
+                        return Err(Error::OutsideWorktree(full));
+                    }
+                    Source::Path(full)
                 }
                 (None, Some(url)) => {
                     if !valid_repo_url(&url) {
@@ -190,6 +198,29 @@ impl Manifest {
         let set: BTreeSet<&str> = self.repos.iter().map(|r| r.policy.as_str()).collect();
         set.into_iter().map(str::to_owned).collect()
     }
+
+    /// Resolves the symbolic links in the local paths. Fails if a path
+    /// leaves the worktree `base` through a link, or does not exist. The
+    /// paths of the result are canonical.
+    pub fn resolve_paths(mut self, base: &Path) -> Result<Self, Error> {
+        let canonical = |p: &Path| {
+            std::fs::canonicalize(p).map_err(|e| Error::Resolve {
+                path: p.to_owned(),
+                error: e.to_string(),
+            })
+        };
+        let root = canonical(base)?;
+        for r in &mut self.repos {
+            if let Source::Path(p) = &mut r.source {
+                let real = canonical(p)?;
+                if !real.starts_with(&root) {
+                    return Err(Error::OutsideWorktree(real));
+                }
+                *p = real;
+            }
+        }
+        Ok(self)
+    }
 }
 
 /// Removes `.` and `..` components without a look at the filesystem.
@@ -232,7 +263,7 @@ mod tests {
 
             [[repo]]
             name = "dotfiles"
-            path = "../../../../Mic92/dotfiles"
+            path = "vendor/./dotfiles/../dotfiles"
             policy = "github"
             "#,
         )
@@ -255,12 +286,66 @@ mod tests {
                 },
                 Repo {
                     name: "dotfiles".into(),
-                    source: Source::Path("/home/user/src/com/github/Mic92/dotfiles".into()),
+                    source: Source::Path(format!("{BASE}/vendor/dotfiles").into()),
                     policy: "github".into(),
                 },
             ]
         );
         assert_eq!(m.policies(), vec!["github".to_owned(), "nix".to_owned()]);
+    }
+
+    #[test]
+    fn local_paths_stay_in_the_worktree() {
+        // The agent can edit hvw.toml on its branch. A path outside the
+        // worktree would send another local repo to a VM.
+        for path in [
+            "..",
+            "../other-worktree",
+            "../../../../Mic92/dotfiles",
+            "/home/user/src/private",
+            "sub/../../x",
+        ] {
+            assert!(
+                matches!(
+                    parse(&format!(
+                        "[[repo]]\nname = \"x\"\npath = \"{path}\"\npolicy = \"p\"\n"
+                    )),
+                    Err(Error::OutsideWorktree(_))
+                ),
+                "{path}"
+            );
+        }
+    }
+
+    #[test]
+    fn symlinks_cannot_leave_the_worktree() {
+        let tmp = tempfile::tempdir().unwrap();
+        let worktree = tmp.path().join("wt");
+        let private = tmp.path().join("private");
+        std::fs::create_dir_all(worktree.join("sub")).unwrap();
+        std::fs::create_dir(&private).unwrap();
+        std::os::unix::fs::symlink(&private, worktree.join("link")).unwrap();
+
+        let text = "[[repo]]\npath = \".\"\npolicy = \"p\"\n\
+                    [[repo]]\npath = \"sub\"\npolicy = \"p\"\n";
+        let m = Manifest::parse(text, &worktree)
+            .unwrap()
+            .resolve_paths(&worktree)
+            .unwrap();
+        let real = std::fs::canonicalize(&worktree).unwrap();
+        assert_eq!(m.repos[0].source, Source::Path(real.clone()));
+        assert_eq!(m.repos[1].source, Source::Path(real.join("sub")));
+
+        let m = Manifest::parse("[[repo]]\npath = \"link\"\npolicy = \"p\"\n", &worktree).unwrap();
+        assert!(matches!(
+            m.resolve_paths(&worktree),
+            Err(Error::OutsideWorktree(_))
+        ));
+        let m = Manifest::parse("[[repo]]\npath = \"gone\"\npolicy = \"p\"\n", &worktree).unwrap();
+        assert!(matches!(
+            m.resolve_paths(&worktree),
+            Err(Error::Resolve { .. })
+        ));
     }
 
     #[test]

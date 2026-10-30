@@ -19,7 +19,7 @@ policy = "nix"
 
 | Field | Required | Meaning |
 |---|---|---|
-| `path` | one of `path`, `url` | A local checkout, relative to `hvw.toml`. `hvw` pushes its commits and uncommitted changes. |
+| `path` | one of `path`, `url` | A local checkout inside the worktree, relative to `hvw.toml`. `hvw` pushes its commits and uncommitted changes. A path that leaves the worktree, also through a symbolic link, is an error. |
 | `url` | one of `path`, `url` | A remote repo, as an `https://` URL. The member clones it through its own network, not through the gatekeeper. Other schemes, local paths and `git@host:path` are an error: the member runs git as root. |
 | `ref` | no | The branch or tag of `url`. Only with `url`. Default: the default branch. |
 | `name` | no | The directory `/work/<name>` in the VM. Default: the last component of the path or the URL, without `.git`. |
@@ -36,3 +36,6 @@ policy = "nix"
   map one credential in different ways cannot go in one VM.
 - The agent harness starts in the first repo.
 - Unknown fields are an error.
+- `hvw.toml` is content of the repo, so the agent in the VM can change
+  it on its branch. For this reason a `path` cannot name a repo outside
+  the worktree. Read changes to `hvw.toml` before you merge them.
