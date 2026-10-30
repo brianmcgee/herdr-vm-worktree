@@ -41,8 +41,9 @@ pub struct Agent {
     next_id: AtomicU64,
     /// Watch events, with the client that they belong to.
     events: broadcast::Sender<(String, WatchEvent)>,
-    /// The VMs that a launch builds now.
-    launching: std::sync::Mutex<BTreeSet<String>>,
+    /// The VMs that a launch, push or destroy works on now, with the name
+    /// of that step. Only one step works on a VM at a time.
+    busy: std::sync::Mutex<BTreeMap<String, &'static str>>,
 }
 
 /// The most requests of one VM that wait for a decision at one time. A VM
@@ -55,6 +56,38 @@ impl Agent {
         records
             .into_iter()
             .find(|r| r.launched && self.cfg.vm_address(r.slot).ok().map(IpAddr::V4) == Some(ip))
+    }
+
+    /// Marks a VM as busy with the step `what` until the result drops.
+    /// Fails with the other step if one works on the VM already.
+    fn hold(&self, vm: &str, what: &'static str) -> Result<Busy<'_>, &'static str> {
+        let mut busy = self.busy.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(other) = busy.get(vm) {
+            return Err(*other);
+        }
+        busy.insert(vm.to_owned(), what);
+        Ok(Busy {
+            agent: self,
+            vm: vm.to_owned(),
+        })
+    }
+
+    fn is_busy(&self, vm: &str) -> bool {
+        self.busy
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .contains_key(vm)
+    }
+
+    /// A free slot for the VM `vm`. Only launched VMs and VMs that a step
+    /// works on hold a slot: pushed repos of a VM that never launched do
+    /// not use up the slots.
+    fn free_slot(&self, vm: &str) -> Result<u16> {
+        let used: Vec<VmRecord> = state::all(&self.cfg)?
+            .into_iter()
+            .filter(|r| r.name != vm && (r.launched || self.is_busy(&r.name)))
+            .collect();
+        state::free_slot(&self.cfg, &used)
     }
 
     /// Adds a request that waits for a decision. Fails if the VM has
@@ -123,7 +156,7 @@ pub async fn run(cfg: Config) -> Result<()> {
                 .unwrap_or(1),
         ),
         events,
-        launching: std::sync::Mutex::new(BTreeSet::new()),
+        busy: std::sync::Mutex::new(BTreeMap::new()),
     });
 
     let b = agent.clone();
@@ -320,13 +353,18 @@ async fn owned(agent: &Agent, peer: &Peer, vm: &str) -> Result<VmRecord> {
     }
 }
 
-async fn push(
+/// The most VMs of one client with pushed repos that did not launch. Each
+/// one holds git mirrors on the disk of the member.
+pub const MAX_UNLAUNCHED: usize = 8;
+
+async fn push<R: tokio::io::AsyncRead + Unpin>(
     agent: &Agent,
     peer: &Peer,
     vm: &str,
     repo: RepoRecord,
-    recv: &mut RecvStream,
+    recv: &mut R,
 ) -> Result<()> {
+    let cfg = &agent.cfg;
     if !valid_vm_name(vm) {
         bail!("{vm:?} is not a valid VM name");
     }
@@ -343,51 +381,75 @@ async fn push(
     {
         bail!("bad branch name");
     }
-    let _lock = agent.lock.lock().await;
-    let mut rec = match state::load(&agent.cfg, vm)? {
-        Some(r) if r.client != peer.name => bail!("VM {vm} belongs to another client"),
-        Some(r) => r,
-        None => {
-            let records = state::all(&agent.cfg)?;
-            VmRecord {
-                name: vm.to_owned(),
-                client: peer.name.clone(),
-                slot: state::free_slot(&agent.cfg, &records)?,
-                repos: vec![],
-                launched: false,
-                grants: vec![],
-                farms: vec![],
+    // The hold keeps other steps away from the VM. The lock is held only
+    // for changes of records, not for the transfer.
+    let _busy = {
+        let _lock = agent.lock.lock().await;
+        let rec = match state::load(cfg, vm)? {
+            Some(r) if r.client != peer.name => bail!("VM {vm} belongs to another client"),
+            Some(r) => r,
+            None => {
+                let unlaunched = state::all(cfg)?
+                    .iter()
+                    .filter(|r| r.client == peer.name && !r.launched)
+                    .count();
+                if unlaunched >= MAX_UNLAUNCHED {
+                    bail!(
+                        "{MAX_UNLAUNCHED} VMs of this client have repos but did not launch: \
+                         destroy them first"
+                    );
+                }
+                VmRecord {
+                    name: vm.to_owned(),
+                    client: peer.name.clone(),
+                    slot: agent.free_slot(vm)?,
+                    repos: vec![],
+                    launched: false,
+                    grants: vec![],
+                    farms: vec![],
+                }
             }
-        }
+        };
+        let busy = agent
+            .hold(vm, "push")
+            .map_err(|other| anyhow::anyhow!("VM {vm} {VM_EXISTS}: a {other} runs"))?;
+        state::save(cfg, &rec)?;
+        busy
     };
-    state::save(&agent.cfg, &rec)?;
-    git::receive(&agent.cfg, vm, &repo, recv).await?;
+    git::receive(cfg, vm, &repo, recv).await?;
     let mut repo = repo;
-    match rec.repos.iter_mut().find(|r| r.name == repo.name) {
-        Some(old) => {
-            repo.policy = old.policy.clone();
-            *old = repo.clone();
+    let launched = {
+        let _lock = agent.lock.lock().await;
+        let mut rec = state::load(cfg, vm)?.context("the record of the VM went away")?;
+        match rec.repos.iter_mut().find(|r| r.name == repo.name) {
+            Some(old) => {
+                repo.policy = old.policy.clone();
+                *old = repo.clone();
+            }
+            None => rec.repos.push(repo.clone()),
         }
-        None => rec.repos.push(repo.clone()),
-    }
-    state::save(&agent.cfg, &rec)?;
-    if rec.launched {
-        git::update(&agent.cfg, vm, &repo).await?;
+        state::save(cfg, &rec)?;
+        rec.launched
+    };
+    if launched {
+        git::update(cfg, vm, &repo).await?;
     }
     Ok(())
 }
 
-/// Removes a VM from the set of launching VMs when its launch ends.
-struct Launching<'a> {
+/// Ends the hold of [`Agent::hold`] on a VM.
+struct Busy<'a> {
     agent: &'a Agent,
     vm: String,
 }
 
-impl Drop for Launching<'_> {
+impl Drop for Busy<'_> {
     fn drop(&mut self) {
-        if let Ok(mut set) = self.agent.launching.lock() {
-            set.remove(&self.vm);
-        }
+        self.agent
+            .busy
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(&self.vm);
     }
 }
 
@@ -418,24 +480,16 @@ async fn launch(
         }
         cfg.policy(&lr.policy)?;
     }
-    let _launching = {
+    let _busy = {
         let _lock = agent.lock.lock().await;
         match state::load(cfg, vm)? {
             Some(r) if r.client != peer.name => bail!("VM {vm} belongs to another client"),
             Some(r) if r.launched => bail!("VM {vm} {VM_EXISTS}: it runs"),
             _ => {}
         }
-        let mut set = agent
-            .launching
-            .lock()
-            .map_err(|_| anyhow::anyhow!("the set of launching VMs is poisoned"))?;
-        if !set.insert(vm.to_owned()) {
-            bail!("VM {vm} {VM_EXISTS}: it launches");
-        }
-        Launching {
-            agent,
-            vm: vm.to_owned(),
-        }
+        agent
+            .hold(vm, "launch")
+            .map_err(|other| anyhow::anyhow!("VM {vm} {VM_EXISTS}: a {other} runs"))?
     };
     let r = build(agent, peer, vm, repos, git_user, progress).await;
     if r.is_err()
@@ -455,6 +509,8 @@ async fn build(
     progress: &mut Progress<'_>,
 ) -> Result<VmInfo> {
     let cfg = &agent.cfg;
+    // The hold of the launch keeps other steps away from this record, so
+    // the lock is necessary only for the choice of the slot.
     let mut rec = {
         let _lock = agent.lock.lock().await;
         let mut rec = match state::load(cfg, vm)? {
@@ -462,13 +518,18 @@ async fn build(
             None => VmRecord {
                 name: vm.to_owned(),
                 client: peer.name.clone(),
-                slot: state::free_slot(cfg, &state::all(cfg)?)?,
+                slot: 0,
                 repos: vec![],
                 launched: false,
                 grants: vec![],
                 farms: vec![],
             },
         };
+        rec.slot = agent.free_slot(vm)?;
+        state::save(cfg, &rec)?;
+        rec
+    };
+    {
         let mut out = Vec::new();
         for lr in repos {
             let r = match &lr.source {
@@ -481,7 +542,6 @@ async fn build(
                     r
                 }
                 RepoSource::Url { url, git_ref } => {
-                    state::save(cfg, &rec)?;
                     progress.say(format!("cloning {url}")).await;
                     let commit = git::clone_url(cfg, vm, &lr.name, url, git_ref.as_deref()).await?;
                     RepoRecord {
@@ -499,8 +559,7 @@ async fn build(
         // Fail early on policies that do not merge.
         gatekeeper::effective(cfg, &rec)?;
         state::save(cfg, &rec)?;
-        rec
-    };
+    }
 
     for r in &rec.repos.clone() {
         progress
@@ -651,14 +710,9 @@ async fn setup_vm(cfg: &Config, rec: &VmRecord) -> Result<()> {
 
 async fn destroy(agent: &Agent, peer: &Peer, vm: &str) -> Result<()> {
     owned(agent, peer, vm).await?;
-    if agent
-        .launching
-        .lock()
-        .map_err(|_| anyhow::anyhow!("the set of launching VMs is poisoned"))?
-        .contains(vm)
-    {
-        bail!("VM {vm} launches now: destroy it when the launch ends");
-    }
+    let _busy = agent
+        .hold(vm, "destroy")
+        .map_err(|other| anyhow::anyhow!("VM {vm} is busy: a {other} runs, try again later"))?;
     remove(agent, vm, &peer.name).await
 }
 
@@ -787,10 +841,14 @@ mod tests {
     use hvw_core::refusal::{EgressAsk, Refusal};
 
     fn agent(events: broadcast::Sender<(String, WatchEvent)>) -> Agent {
+        agent_in(events, std::path::Path::new("/var/lib/hvw"))
+    }
+
+    fn agent_in(events: broadcast::Sender<(String, WatchEvent)>, state: &std::path::Path) -> Agent {
         let cfg: Config = serde_json::from_value(json!({
             "name": "m1",
             "link": "/etc/hvw/link.json",
-            "state_dir": "/var/lib/hvw",
+            "state_dir": state,
             "policies_dir": "/etc/hvw/policies",
             "incus_socket": "/var/lib/incus/unix.socket",
             "image": "hvw",
@@ -812,8 +870,89 @@ mod tests {
             pending: Mutex::new(BTreeMap::new()),
             next_id: AtomicU64::new(1),
             events,
-            launching: std::sync::Mutex::new(BTreeSet::new()),
+            busy: std::sync::Mutex::new(BTreeMap::new()),
         }
+    }
+
+    fn peer(name: &str) -> Peer {
+        serde_json::from_value(json!({ "name": name, "id": "a".repeat(64) })).unwrap()
+    }
+
+    fn record(client: &str, vm: &str, slot: u16, launched: bool) -> VmRecord {
+        VmRecord {
+            name: vm.into(),
+            client: client.into(),
+            slot,
+            repos: vec![],
+            launched,
+            grants: vec![],
+            farms: vec![],
+        }
+    }
+
+    fn pushed(repo: &str) -> RepoRecord {
+        RepoRecord {
+            name: repo.into(),
+            policy: String::new(),
+            commit: "0123456789abcdef0123456789abcdef01234567".into(),
+            stash: None,
+            branch: Some("main".into()),
+        }
+    }
+
+    #[test]
+    fn vms_that_never_launched_hold_no_slot() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (events, _) = broadcast::channel(1);
+        let a = agent_in(events, tmp.path());
+        for (n, vm) in ["hvw-p0", "hvw-p1", "hvw-p2"].iter().enumerate() {
+            state::save(&a.cfg, &record("alice", vm, n as u16, false)).unwrap();
+        }
+        state::save(&a.cfg, &record("alice", "hvw-run", 3, true)).unwrap();
+        assert_eq!(a.free_slot("hvw-new").unwrap(), 0);
+        // A VM that a step works on keeps its slot.
+        let _busy = a.hold("hvw-p0", "launch").unwrap();
+        assert_eq!(a.free_slot("hvw-new").unwrap(), 1);
+        // A launch of a VM can keep the slot of its own record.
+        assert_eq!(a.free_slot("hvw-p0").unwrap(), 0);
+    }
+
+    #[tokio::test]
+    async fn a_client_has_a_limited_number_of_unlaunched_vms() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (events, _) = broadcast::channel(1);
+        let a = agent_in(events, tmp.path());
+        for n in 0..MAX_UNLAUNCHED {
+            let vm = format!("hvw-p{n}");
+            state::save(&a.cfg, &record("alice", &vm, n as u16, false)).unwrap();
+        }
+        let cap = "did not launch";
+        let e = push(&a, &peer("alice"), "hvw-new", pushed("app"), &mut &b""[..])
+            .await
+            .unwrap_err();
+        assert!(format!("{e:#}").contains(cap), "{e:#}");
+        assert!(state::load(&a.cfg, "hvw-new").unwrap().is_none());
+        // The empty bundle fails later, after the cap.
+        let e = push(&a, &peer("alice"), "hvw-p0", pushed("app"), &mut &b""[..])
+            .await
+            .unwrap_err();
+        assert!(!format!("{e:#}").contains(cap), "{e:#}");
+        let e = push(&a, &peer("bob"), "hvw-new", pushed("app"), &mut &b""[..])
+            .await
+            .unwrap_err();
+        assert!(!format!("{e:#}").contains(cap), "{e:#}");
+    }
+
+    #[tokio::test]
+    async fn a_push_does_not_touch_a_vm_that_launches() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (events, _) = broadcast::channel(1);
+        let a = agent_in(events, tmp.path());
+        let _busy = a.hold("hvw-a", "launch").unwrap();
+        let e = push(&a, &peer("alice"), "hvw-a", pushed("app"), &mut &b""[..])
+            .await
+            .unwrap_err();
+        assert!(format!("{e:#}").contains(VM_EXISTS), "{e:#}");
     }
 
     fn ask(vm: &str, path: &str) -> Pending {
