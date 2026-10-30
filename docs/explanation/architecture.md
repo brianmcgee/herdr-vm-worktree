@@ -114,6 +114,21 @@ with a self-hosted relay. Each machine has an iroh key from a clan var.
 A member accepts only the clients of its clan service instance. A client
 accepts only the members.
 
+## Network filters on the member
+
+Three filters guard the gatekeepers and the broker:
+
+| Filter | Traffic | Lets through |
+|---|---|---|
+| Incus network ACL of each VM | from the VM | TCP to its own gatekeeper tunnel port and to the broker port |
+| nftables `hvw-bridge`, input | from the bridge into the member | DHCP, DNS, the broker port, the tunnel ports |
+| nftables `hvw-gatekeeper`, output | from member processes over `lo` | the gatekeeper ports for root only |
+
+The last filter is necessary because local traffic does not go through
+the bridge. Without it, each local user could use each gatekeeper.
+`hvw-agent` runs as root. It connects to the tunnel port to check that a
+gatekeeper is ready, and to the management port to reload a policy.
+
 ## Why one Incus per member, not a cluster
 
 `hvw-agent` manages only its own member. The client picks the member. An

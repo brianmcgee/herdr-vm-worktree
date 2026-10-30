@@ -44,15 +44,15 @@ that repo.
 Each VM has a slot *n* from 0 to 999. With the default
 `gatekeeperPortBase` of 20000:
 
-| Port | Use | Reachable from the VM |
-|---|---|---|
-| 20000 + *n* | gatekeeper proxy (tunnel) | yes |
-| 21000 + *n* | gatekeeper HTTP | no |
-| 22000 + *n* | gatekeeper HTTPS | no |
-| 23000 + *n* | gatekeeper metrics | no |
-| 24000 + *n* | gatekeeper management (reload) | no |
-| 7999 | egress broker (`brokerPort`) | yes |
-| `bind` port, UDP | control plane | — (clients) |
+| Port | Use | Reachable from the VM | Reachable on the member |
+|---|---|---|---|
+| 20000 + *n* | gatekeeper proxy (tunnel) | yes | root only |
+| 21000 + *n* | gatekeeper HTTP | no | root only |
+| 22000 + *n* | gatekeeper HTTPS | no | root only |
+| 23000 + *n* | gatekeeper metrics | no | root only |
+| 24000 + *n* | gatekeeper management (reload) | no | root only |
+| 7999 | egress broker (`brokerPort`) | yes | yes |
+| `bind` port, UDP | control plane | — (clients) | — |
 
 ## systemd units on the member
 

@@ -41,6 +41,10 @@ flowchart LR
 - **One gatekeeper per VM.** Each VM has its own iron-proxy process, CA
   and audit log (`journalctl -u iron-proxy@<vm>`). One VM never sees the
   credentials or grants of another VM.
+- **Only root on the member reaches a gatekeeper.** An nftables rule
+  resets each new local connection to a gatekeeper port from a user
+  that is not root. Other users and the `nixbld` fetchers of the
+  devshell builds thus cannot use the credentials of a VM.
 
 ## What hvw does not protect against
 
@@ -51,6 +55,8 @@ flowchart LR
 - **Flake evaluation on the member.** `hvw-agent` builds the devshell of
   each repo on the member. A repo flake runs code there. Use trusted
   repos only.
+- **Root on the member.** Root can read the credential files and use
+  each gatekeeper. `hvw-agent` runs as root.
 - **virtiofsd.** It runs on the member and is the attack surface of the
   store delivery.
 

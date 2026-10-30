@@ -207,6 +207,12 @@ in
         from = cfg.gatekeeperPortBase;
         to = cfg.gatekeeperPortBase + 999;
       };
+      # All five listener blocks of one gatekeeper slot range:
+      # Config::ports in crates/hvw-agent/src/config.rs (5 * MAX_SLOTS).
+      gatekeeperPorts = {
+        from = cfg.gatekeeperPortBase;
+        to = cfg.gatekeeperPortBase + 5 * 1000 - 1;
+      };
     in
     {
       assertions = [
@@ -245,6 +251,22 @@ in
             tcp dport ${toString cfg.brokerPort} accept
             tcp dport ${toString tunnelPorts.from}-${toString tunnelPorts.to} accept
             drop
+          }
+        '';
+      };
+
+      # Local processes reach the gatekeepers over lo, where neither the
+      # Incus ACL nor the hvw-bridge chain applies. A gatekeeper cannot
+      # tell its clients apart, so any local user (also the nixbld
+      # fetchers of fixed-output builds of a devshell) could use the
+      # credentials of a VM. Only root (hvw-agent: readiness probe,
+      # reload) may connect.
+      networking.nftables.tables.hvw-gatekeeper = {
+        family = "inet";
+        content = ''
+          chain output {
+            type filter hook output priority filter; policy accept;
+            oifname "lo" ct state new tcp dport ${toString gatekeeperPorts.from}-${toString gatekeeperPorts.to} meta skuid != 0 reject with tcp reset
           }
         '';
       };

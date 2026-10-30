@@ -255,6 +255,20 @@ pkgs.testers.runNixOSTest {
           out = agent(name, "curl -sf -H \"Authorization: Bearer $WEB_TOKEN\" https://api.example.test/x")
           assert json.loads(out)["auth"] == "Bearer ${secret}", out
 
+      with subtest("a member process outside hvw-agent cannot use a gatekeeper"):
+          gk = json.loads(member.succeed(f"cat /var/lib/hvw/vms/{name}/gatekeeper/config.json"))
+          tunnel = gk["proxy"]["tunnel_listen"]
+          https_port = gk["proxy"]["https_listen"].rsplit(":", 1)[1]
+          # nixbld1 stands for the fetcher of a fixed-output build on the member.
+          as_builder = "setpriv --reuid=nixbld1 --regid=nixbld --clear-groups"
+          for target in [
+              f"--proxy http://{tunnel} https://api.example.test/x",
+              f"--connect-to api.example.test:443:127.0.0.1:{https_port} https://api.example.test/x",
+          ]:
+              member.succeed(
+                  f"rc=0; {as_builder} ${pkgs.curl}/bin/curl -sk -m 5 -o /dev/null {target} || rc=$?; test $rc -eq 7"
+              )
+
       with subtest("the gatekeeper refuses other hosts, and the VM has no other way out"):
           # Through a proxy, the refusal is the answer to CONNECT, and curl
           # fails.
