@@ -281,7 +281,7 @@ pub async fn fetch<W: AsyncWrite + Unpin>(
     )
     .run(b"")
     .await?;
-    let head = String::from_utf8_lossy(&head).trim().to_owned();
+    let head = head_of(&head);
     let bundle = user_exec(
         cfg,
         vm,
@@ -290,7 +290,15 @@ pub async fn fetch<W: AsyncWrite + Unpin>(
     .run(b"")
     .await?;
     out.write_all(&bundle).await?;
-    Ok((!head.is_empty()).then_some(head))
+    Ok(head)
+}
+
+/// The branch in the output of `git symbolic-ref` in the VM. The VM
+/// controls this output, so a value that is not a plain branch name is
+/// `None`: the client prints it.
+fn head_of(out: &[u8]) -> Option<String> {
+    let head = std::str::from_utf8(out).ok()?.trim();
+    valid_branch(head).then(|| head.to_owned())
 }
 
 fn user_exec(cfg: &Config, vm: &str, script: &str) -> Exec {
@@ -300,6 +308,19 @@ fn user_exec(cfg: &Config, vm: &str, script: &str) -> Exec {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn head_from_the_vm_is_a_branch_name() {
+        assert_eq!(head_of(b"main\n").as_deref(), Some("main"));
+        assert_eq!(head_of(b"feat/login-2\n").as_deref(), Some("feat/login-2"));
+        // Detached HEAD.
+        assert_eq!(head_of(b""), None);
+        // A hostile VM prints what it wants.
+        assert_eq!(head_of(b"main\x1b]0;pwned\x07\n"), None);
+        assert_eq!(head_of(b"main\nother"), None);
+        assert_eq!(head_of(b"--upload-pack=x"), None);
+        assert_eq!(head_of(b"\xff\xfe"), None);
+    }
 
     #[test]
     fn names() {
