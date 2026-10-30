@@ -35,6 +35,9 @@ Use `git merge` or `git cherry-pick` as with any remote.
 In herdr: the workspace row shows the token, and a toast appears. Open
 the popup with the plugin action `review`.
 
+In the terminal UI: run `hvw`, press `2` for the pending requests, then
+`v` (allow for this VM), `p` (allow for its policies) or `d` (deny).
+
 On the command line:
 
 ```sh
@@ -43,6 +46,8 @@ hvw decide <id> vm        # allow for this VM
 hvw decide <id> policy    # allow for new VMs too, until the next deploy
 hvw decide <id> deny
 ```
+
+`<id>` is in the `ID` column of `hvw pending`.
 
 After `policy`, `hvw` prints a Nix change. Commit it to the clan repo and
 deploy to keep the grant.
@@ -67,5 +72,11 @@ CA and its grants go away. The farms stay for the next VM.
 ## List all VMs
 
 ```sh
-hvw list
+hvw list          # a table with a header row
+hvw list --json   # for scripts
 ```
+
+`hvw list --help` tells what each column means. Or run `hvw` without a
+command: the terminal UI shows the VMs and refreshes them every 5
+seconds. Select a VM and press `Enter` for its details, `a` to attach,
+`p` to push, `f` to fetch or `ctrl-d` to destroy it.

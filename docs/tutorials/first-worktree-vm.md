@@ -108,7 +108,7 @@ hvw pending
 hvw decide <id> vm
 ```
 
-`<id>` is the first column of `hvw pending`. In the VM,
+`<id>` is in the `ID` column of `hvw pending`. In the VM,
 `egress-request` prints `allowed (vm): make the request again`. Try
 again:
 
