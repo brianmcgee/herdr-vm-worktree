@@ -138,7 +138,7 @@ impl EgressAsk {
             && self
                 .host
                 .bytes()
-                .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'-' | b'_' | b'*'));
+                .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'-' | b'_'));
         if !host_ok {
             return Err(format!("not a host name: {:?}", self.host));
         }
@@ -345,6 +345,8 @@ mod tests {
         );
         assert!(ask("", None, None).validate().is_err());
         assert!(ask("a b", None, None).validate().is_err());
+        // A real refused host never holds `*`. In a grant it is a glob.
+        assert!(ask("*.com", None, None).validate().is_err());
         assert!(ask("a.b", Some("G ET"), None).validate().is_err());
         assert!(ask("a.b", None, Some("relative")).validate().is_err());
         assert!(ask("a.b", None, Some("/x\n/y")).validate().is_err());
