@@ -7,7 +7,19 @@
     blueprint.inputs.nixpkgs.follows = "nixpkgs";
     treefmt-nix.url = "github:numtide/treefmt-nix";
     treefmt-nix.inputs.nixpkgs.follows = "nixpkgs";
+    # Only the checks use clan-core: they evaluate the clan service in a
+    # small clan. A clan that imports this flake should make it follow its
+    # own clan-core.
+    clan-core.url = "github:clan-lol/clan-core";
+    clan-core.inputs.nixpkgs.follows = "nixpkgs";
+    clan-core.inputs.treefmt-nix.follows = "treefmt-nix";
   };
 
-  outputs = inputs: inputs.blueprint { inherit inputs; };
+  outputs =
+    inputs:
+    let
+      outputs = inputs.blueprint { inherit inputs; };
+    in
+    # clan-core looks for clan services in the `clan.modules` output.
+    outputs // { clan.modules = outputs.modules.clan; };
 }
