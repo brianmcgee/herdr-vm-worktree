@@ -18,6 +18,28 @@ pkgs.testers.runNixOSTest {
   testScript = ''
     ${builtins.readFile ../tests/common.py}
 
+    import time
+
+
+    def qemu_rss_mib(machine, name):
+        """The resident memory of the QEMU process of a VM, in MiB."""
+        pid = machine.succeed(f"cat /run/incus/{name}/qemu.pid").strip()
+        kb = machine.succeed(f"awk '/^VmRSS:/ {{print $2}}' /proc/{pid}/status").strip()
+        return int(kb) // 1024
+
+
+    def wait_for_rss_at_most(machine, name, mib, timeout):
+        """Wait until the QEMU process of a VM holds at most `mib` MiB."""
+        deadline = time.monotonic() + timeout
+        while True:
+            rss = qemu_rss_mib(machine, name)
+            if rss <= mib:
+                return
+            if time.monotonic() > deadline:
+                raise AssertionError(f"the QEMU of {name} holds {rss} MiB after {timeout} s, expected at most {mib} MiB")
+            time.sleep(5)
+
+
     member.start()
     require_nested_kvm(member)
     member.wait_for_unit("hvw-image-import.service")
@@ -31,6 +53,27 @@ pkgs.testers.runNixOSTest {
 
     with subtest("the incus agent in the VM answers"):
         wait_for_vm(member, "t1", timeout=300)
+
+    with subtest("DAMON_RECLAIM runs in the VM"):
+        enabled = vm(member, "t1", "cat /sys/module/damon_reclaim/parameters/enabled").strip()
+        assert enabled == "Y", f"DAMON_RECLAIM is not on: {enabled!r}"
+
+    with subtest("freed guest memory goes back to the host"):
+        base = qemu_rss_mib(member, "t1")
+        vm(member, "t1", "dd if=/dev/zero of=/dev/shm/fill bs=1M count=400")
+        full = qemu_rss_mib(member, "t1")
+        assert full - base >= 300, f"the VM took too little memory: {base} -> {full} MiB"
+        vm(member, "t1", "rm /dev/shm/fill")
+        wait_for_rss_at_most(member, "t1", full - 250, timeout=60)
+
+    with subtest("cold page cache goes back to the host"):
+        vm(member, "t1", "dd if=/dev/urandom of=/root/cache bs=1M count=400 && sync")
+        full = qemu_rss_mib(member, "t1")
+        try:
+            wait_for_rss_at_most(member, "t1", full - 250, timeout=300)
+        except Exception:
+            print(vm(member, "t1", "grep . /sys/module/damon_reclaim/parameters/*"))
+            raise
 
     with subtest("the VM has the harness user and no password login"):
         vm(member, "t1", "id agent")
