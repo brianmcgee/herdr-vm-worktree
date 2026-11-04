@@ -150,6 +150,21 @@ in
       };
     };
 
+    # The VM gives free memory back to the host through the balloon (free
+    # page reporting). DAMON_RECLAIM frees page cache that no process
+    # touched for 60 s, so that the cache of builds does not keep host
+    # memory. It is active while less than 90 % of the memory is free.
+    # Below 5 % free, the normal reclaim takes over. The VM has no swap, so
+    # it skips anonymous memory.
+    boot.kernelParams = [
+      "damon_reclaim.enabled=Y"
+      "damon_reclaim.min_age=60000000"
+      "damon_reclaim.skip_anon=Y"
+      "damon_reclaim.wmarks_high=950"
+      "damon_reclaim.wmarks_mid=900"
+      "damon_reclaim.wmarks_low=50"
+    ];
+
     documentation.enable = false;
     documentation.nixos.enable = false;
 
