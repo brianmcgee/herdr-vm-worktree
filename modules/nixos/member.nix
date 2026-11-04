@@ -224,6 +224,10 @@ in
           );
           message = "services.hvw.member: a policy secret names a credential that services.hvw.member.credentials does not define";
         }
+        {
+          assertion = lib.versionAtLeast config.virtualisation.incus.package.version "7.6.0";
+          message = "services.hvw.member needs Incus 7.6.0 or later: older Incus does not turn on free page reporting of the VM balloon, so VMs never give memory back.";
+        }
       ];
 
       networking.nftables.enable = true;
@@ -292,6 +296,9 @@ in
 
       virtualisation.incus = {
         enable = true;
+        # Incus LTS (the NixOS default) does not turn on free page
+        # reporting of the VM balloon. The feature release does.
+        package = lib.mkDefault pkgs.incus;
         preseed = {
           storage_pools = [
             {
