@@ -109,6 +109,8 @@ pkgs.testers.runNixOSTest {
       '';
       services.hvw.member = {
         enable = true;
+        # The test node has 6 GiB. The check would refuse the launches.
+        launchMinAvailableMiB = 0;
         link = {
           bind = "0.0.0.0:7842";
           peers = [

@@ -23,7 +23,7 @@ use tokio::sync::{Mutex, broadcast, oneshot};
 use crate::config::{Config, env_file};
 use crate::incus::{Exec, Incus, OWNER_KEY};
 use crate::state::{RepoRecord, VmRecord};
-use crate::{attach, broker, farm, gatekeeper, git, state};
+use crate::{attach, broker, farm, gatekeeper, git, memory, state};
 use hvw_core::vm::valid_vm_name;
 
 struct PendingEntry {
@@ -509,6 +509,7 @@ async fn build(
     progress: &mut Progress<'_>,
 ) -> Result<VmInfo> {
     let cfg = &agent.cfg;
+    memory::check_launch_now(cfg.launch_min_available_mib)?;
     // The hold of the launch keeps other steps away from this record, so
     // the lock is necessary only for the choice of the slot.
     let mut rec = {
@@ -860,7 +861,8 @@ mod tests {
                 "cpus": 2, "memory": "2GiB", "user": "agent",
                 "uid": 1000, "gid": 100, "harness": ["bash"]
             },
-            "farm_retention_days": 14
+            "farm_retention_days": 14,
+            "launch_min_available_mib": 0
         }))
         .unwrap();
         Agent {

@@ -29,6 +29,11 @@ pub struct Config {
     pub vm: VmConfig,
     /// Farms that no VM used for this many days are deleted.
     pub farm_retention_days: u64,
+    /// The free memory (MemAvailable) in MiB that the member must have to
+    /// launch a VM. The memory of a VM is a ceiling, not a reservation, so
+    /// the slots do not protect the member from overcommit. 0 turns the
+    /// check off.
+    pub launch_min_available_mib: u64,
     /// The credential files of the member, by name. The gatekeeper of a VM
     /// loads only the ones that the secrets of its policies name.
     #[serde(default)]
@@ -178,6 +183,7 @@ pub(crate) mod tests {
                 harness: vec!["bash".into()],
             },
             farm_retention_days: 14,
+            launch_min_available_mib: 0,
             credentials: BTreeMap::new(),
         }
     }

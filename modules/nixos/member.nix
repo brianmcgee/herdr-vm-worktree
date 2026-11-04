@@ -102,6 +102,12 @@ in
       description = "Farms that no VM used for this many days are deleted.";
     };
 
+    launchMinAvailableMiB = mkOption {
+      type = types.ints.unsigned;
+      default = 4096;
+      description = "The free memory (MemAvailable) in MiB that the member must have to launch a VM. 0 turns the check off.";
+    };
+
     vm = {
       cpus = mkOption {
         type = types.ints.positive;
@@ -110,8 +116,8 @@ in
       };
       memory = mkOption {
         type = types.str;
-        default = "4GiB";
-        description = "The memory of each worktree VM, in Incus syntax.";
+        default = "8GiB";
+        description = "The memory ceiling of each worktree VM, in Incus syntax. The VM takes host memory only when it uses it and gives free memory back.";
       };
       harness = mkOption {
         type = types.listOf types.str;
@@ -197,6 +203,7 @@ in
         broker_port = cfg.brokerPort;
         gatekeeper_port_base = cfg.gatekeeperPortBase;
         farm_retention_days = cfg.farmRetentionDays;
+        launch_min_available_mib = cfg.launchMinAvailableMiB;
         credentials = lib.mapAttrs (_: f: "${f}") cfg.credentials;
         vm = {
           inherit (cfg.vm) cpus memory harness;

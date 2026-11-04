@@ -7,6 +7,7 @@ mod farm;
 mod gatekeeper;
 mod git;
 mod incus;
+mod memory;
 mod server;
 mod state;
 

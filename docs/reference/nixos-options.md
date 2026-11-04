@@ -67,8 +67,9 @@ Only the members and clients of the instance may use the relay.
 | `brokerPort` | `7999` | The egress broker port on the bridge address. |
 | `gatekeeperPortBase` | `20000` | The first of five ranges of 1000 gatekeeper ports. |
 | `farmRetentionDays` | `14` | `hvw-agent` deletes a farm that no VM used for this many days. |
+| `launchMinAvailableMiB` | `4096` | `hvw-agent` refuses a launch when the member has less free memory (`MemAvailable`) in MiB. `0` turns the check off. |
 | `vm.cpus` | `2` | vCPUs of each VM. |
-| `vm.memory` | `4GiB` | Memory of each VM, in Incus syntax. |
+| `vm.memory` | `8GiB` | The memory ceiling of each VM, in Incus syntax. The VM takes host memory only when it uses it and gives free memory back. |
 | `vm.harness` | `[ "/run/current-system/sw/bin/bash" "--login" ]` | The agent harness command. `hvw attach` runs it in the first repo, after the devshell is in `PATH`. |
 | `credentials` | `{}` | Credential files by name. The gatekeeper of a VM loads as systemd credentials only the ones that the secrets of its policies name. |
 | `policies` | `{}` | Egress policies by name. See below. |
